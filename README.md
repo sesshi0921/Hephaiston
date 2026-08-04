@@ -72,18 +72,26 @@ cmake --build build -j 8
 ├── README.md
 ├── external/
 │   └── imgui/                  # Dear ImGui Docking Branch
+├── include/                    # プラグイン向け短縮 forwarding headers
 ├── include/hephaiston/
 │   ├── Application.h
+│   ├── EditorContext.h
 │   ├── EditorRegistry.h
 │   ├── EditorShell.h
 │   ├── EditorTypes.h
 │   ├── Framebuffer.h
+│   ├── Plugin.h
+│   ├── PluginManager.h
+│   ├── SceneRegistry.h
+│   ├── SelectionManager.h
 │   └── ViewportRenderer.h
+├── plugins/                    # DLL/dylib プラグイン置き場 / CMakeサブディレクトリ
 └── src/
     ├── Application.cpp
     ├── EditorRegistry.cpp
     ├── EditorShell.cpp
     ├── Framebuffer.cpp
+    ├── PluginManager.cpp
     ├── ViewportRenderer.cpp
     └── main.cpp
 ```
@@ -160,22 +168,141 @@ public:
 
 現段階では Core 起動時にサンプルアドオンは登録していません。左パネルと右パネルは、将来アドオン/プラグインから UI やヒエラルキーが登録されるまで空のホストとして表示されます。
 
-## 今後 DLL プラグイン化する場合の拡張案
 
-次の段階では、Core とプラグインの ABI 境界を明確化します。
+## Core UI API（プラグイン向け）
 
-- `IEditorPanel` などの C++ インターフェイスを直接 DLL 境界で渡さず、C ABI の登録関数を用意する
-- 例: `extern "C" bool hephaiston_register_plugin(HephaistonPluginApi* api);`
-- `HephaistonPluginApi` 経由で panel / window / command / overlay を登録する
-- プラグインごとの lifetime を `PluginHandle` で管理する
-- DLL unload 前に登録 UI とコマンドを安全に unregister する
-- プラグイン manifest に ID / 表示名 / version / 対応 Core API version を持たせる
-- 将来的な対象:
-  - 地図・地球儀ビューア
-  - 建築基準法 / 用途地域 / 斜線制限 / 日影規制 DB 連携
-  - 建築可能ボリューム生成
-  - 間取り生成
-  - GLB / KML / LandXML / IFC エクスポート
+`EditorRegistry` は、将来のDLLプラグインから各UI領域を埋めるためのAPI境界として使います。
+
+### 表示制御
+
+```cpp
+auto& menu = registry.menuVisibility();
+menu.showFile = true;
+menu.showEdit = false;
+menu.showFpsControl = true;
+
+auto& viewport = registry.viewportRenderSettings();
+viewport.showHorizontalGrid = true;
+viewport.showOriginAxes = false;
+```
+
+### プラグイン側からのinclude
+
+`include/` 直下に forwarding header を用意しているため、`plugins/` 配下のソースでは短い名前でCore APIをincludeできます。
+
+```cpp
+#include "EditorRegistry.h"
+#include "ViewportRenderSettings.h"
+#include "ViewportSceneLayer.h"
+#include "PluginAPI.h"
+```
+
+CMakeでは `hephaiston_plugin_api` interface target を提供しています。
+
+```cmake
+add_library(my_plugin MODULE plugin.cpp)
+target_link_libraries(my_plugin PRIVATE hephaiston_plugin_api)
+```
+
+`plugins/CMakeLists.txt` は存在する場合に自動で `add_subdirectory(plugins)` されます。
+
+### draw-only UI インターフェース
+
+プラグインが直接UI内容を描画する領域は、かなり緩い `draw()` だけのインターフェースを使います。これらを継承して登録しない限り、該当領域には表示されません。
+
+```cpp
+class MyPanel : public IMainMenuPanel {
+public:
+    void draw() override { /* left panel UI */ }
+};
+
+class MyHierarchy : public IHierarchyPanel {
+public:
+    void draw() override { /* right hierarchy UI */ }
+};
+
+class MyWindow : public IFloatingWindow {
+public:
+    void draw() override { /* floating window UI */ }
+};
+```
+
+登録時にIDや表示名を渡します。
+
+```cpp
+registry.registerMainMenuPanel("my.panel", "My Panel", std::make_unique<MyPanel>());
+registry.registerHierarchyPanel("my.hierarchy", "My Hierarchy", std::make_unique<MyHierarchy>());
+registry.registerFloatingWindow("my.window", "My Window", std::make_unique<MyWindow>());
+```
+
+### 登録できる領域
+
+- メニューバー: `registerMenuItem(EditorMenuItem)` / `registerMenuBarContributor()`
+- 左メインパネル: `registerMainMenuPanel(id, name, std::unique_ptr<IMainMenuPanel>)`
+- FBO表示データ: `registerViewportSceneLayer(std::unique_ptr<IViewportSceneLayer>)`
+- FBOツール: `registerViewportTool(std::unique_ptr<IViewportTool>)`
+- FBOオーバーレイ: `registerOverlay(std::unique_ptr<IViewportOverlay>)`
+- 右ヒエラルキー: `registerHierarchyPanel()` / `registerHierarchyProvider()` / `registerSceneProvider()` / `EditorContext::scene()`
+- プロパティ: `registerPropertiesPanel(std::unique_ptr<IPropertiesPanel>)`
+- コンテキストメニュー: `registerContextMenuProvider(std::unique_ptr<IContextMenuProvider>)`
+- 下ステータスバー: `registerStatusBarItem(StatusBarItem)` / `registerStatusBarWidget()`
+- フローティングウィンドウ: `registerFloatingWindow(id, title, std::unique_ptr<IFloatingWindow>)`
+- コマンド: `registerCommand(EditorCommand)` / `registerCommand(std::unique_ptr<IEditorCommand>)`
+
+### FBOへの線分追加例
+
+```cpp
+class MyLayer : public IViewportSceneLayer {
+public:
+    const char* id() const override { return "my.layer"; }
+    const char* displayName() const override { return "My Layer"; }
+    void collectViewportLines(std::vector<ViewportLine>& out) override {
+        out.push_back({0, 0, 0, 10, 0, 0, ImVec4(1, 0, 0, 1)});
+    }
+};
+```
+
+## DLL / dylib プラグイン化
+
+Core は `PluginManager` を持ち、起動時に `plugins/` と `build/plugins/` から `.dylib` / `.so` / `.dll` を探索します。
+
+プラグインは `IPlugin` を実装し、`HEPHAISTON_DECLARE_PLUGIN(MyPlugin)` で C ABI のエントリポイントを公開します。
+
+```cpp
+#include "PluginAPI.h"
+
+class MyPlugin final : public hephaiston::IPlugin {
+public:
+    hephaiston::PluginDescriptor descriptor() const override {
+        return {"my.plugin", "My Plugin", "Vendor", "0.1.0", hephaiston::kPluginApiVersion};
+    }
+
+    bool onLoad(hephaiston::EditorContext& context) override {
+        context.registry().registerMainMenuPanel("my.panel", "My Plugin", std::make_unique<MyPanel>());
+        return true;
+    }
+
+    void onUnload(hephaiston::EditorContext&) override {}
+};
+
+HEPHAISTON_DECLARE_PLUGIN(MyPlugin)
+```
+
+`plugins/CMakeLists.txt` では以下の helper が使えます。成果物は `build/plugins/` に出力されます。
+
+```cmake
+hephaiston_add_plugin(my_plugin MyPlugin.cpp)
+```
+
+現段階は「同じC++コンパイラ/ランタイムでビルドするプラグイン」向けの C++ ABI + C entrypoint 方式です。サードパーティ配布を強く意識する段階では、`std::string` / `std::unique_ptr` / C++ virtual interface をDLL境界で渡さない完全C ABIテーブル方式へ移行できるよう、`PluginDescriptor::apiVersion` と `PluginManager` の境界を分けています。
+
+将来的な対象:
+
+- 地図・地球儀ビューア
+- 建築基準法 / 用途地域 / 斜線制限 / 日影規制 DB 連携
+- 建築可能ボリューム生成
+- 間取り生成
+- GLB / KML / LandXML / IFC エクスポート
 
 ## 操作メモ
 

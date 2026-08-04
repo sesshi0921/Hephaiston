@@ -156,12 +156,12 @@ void ViewportRenderer::resize(int width, int height) {
     framebuffer_.resize(width, height);
 }
 
-void ViewportRenderer::render(ViewMode mode, const ViewportStatus& status) {
+void ViewportRenderer::render(ViewMode mode, const ViewportStatus& status, const ViewportRenderSettings& settings, const std::vector<std::unique_ptr<IViewportSceneLayer>>& sceneLayers) {
     if (!framebuffer_.valid()) {
         return;
     }
 
-    updateSceneGeometry(mode, status);
+    updateSceneGeometry(mode, status, settings, sceneLayers);
 
     framebuffer_.bind();
     glViewport(0, 0, framebuffer_.width(), framebuffer_.height());
@@ -245,7 +245,7 @@ void ViewportRenderer::destroyPipeline() {
     }
 }
 
-void ViewportRenderer::updateSceneGeometry(ViewMode mode, const ViewportStatus& status) {
+void ViewportRenderer::updateSceneGeometry(ViewMode mode, const ViewportStatus& status, const ViewportRenderSettings& settings, const std::vector<std::unique_ptr<IViewportSceneLayer>>& sceneLayers) {
     std::vector<float> vertices;
     vertices.reserve(12000);
 
@@ -262,20 +262,35 @@ void ViewportRenderer::updateSceneGeometry(ViewMode mode, const ViewportStatus& 
     const float gridMin = -static_cast<float>(gridHalfCount) * gridStep;
     const float gridMax = static_cast<float>(gridHalfCount) * gridStep;
 
-    for (int i = -gridHalfCount; i <= gridHalfCount; ++i) {
-        const float p = static_cast<float>(i) * gridStep;
-        const bool isAxis = i == 0;
-        const bool isMajor = i % 5 == 0;
-        pushLine(vertices, {p, gridMin, 0.0f}, {p, gridMax, 0.0f}, isAxis ? yAxis : (isMajor ? major : minor));
-        pushLine(vertices, {gridMin, p, 0.0f}, {gridMax, p, 0.0f}, isAxis ? xAxis : (isMajor ? major : minor));
+    if (settings.showHorizontalGrid) {
+        for (int i = -gridHalfCount; i <= gridHalfCount; ++i) {
+            const float p = static_cast<float>(i) * gridStep;
+            const bool isAxis = i == 0;
+            const bool isMajor = i % 5 == 0;
+            pushLine(vertices, {p, gridMin, 0.0f}, {p, gridMax, 0.0f}, isAxis ? yAxis : (isMajor ? major : minor));
+            pushLine(vertices, {gridMin, p, 0.0f}, {gridMax, p, 0.0f}, isAxis ? xAxis : (isMajor ? major : minor));
+        }
     }
 
-    if (mode == ViewMode::Mode3D) {
+    if (settings.showOriginAxes && mode == ViewMode::Mode3D) {
         // Minimal orientation axis only. Add-ons will provide actual parcels/buildings later.
         const float axisLength = std::max(8.0f, gridStep * 4.0f);
         pushLine(vertices, {0.0f, 0.0f, 0.0f}, {axisLength, 0.0f, 0.0f}, xAxis);
         pushLine(vertices, {0.0f, 0.0f, 0.0f}, {0.0f, axisLength, 0.0f}, yAxis);
         pushLine(vertices, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, axisLength}, zAxis);
+    }
+
+    std::vector<ViewportLine> pluginLines;
+    for (const auto& layer : sceneLayers) {
+        if (layer && layer->visible()) {
+            layer->collectViewportLines(pluginLines);
+        }
+    }
+    for (const auto& line : pluginLines) {
+        pushLine(vertices,
+                 {line.x1, line.y1, line.z1},
+                 {line.x2, line.y2, line.z2},
+                 {line.color.x, line.color.y, line.color.z});
     }
 
     vertexCount_ = static_cast<int>(vertices.size() / 6);

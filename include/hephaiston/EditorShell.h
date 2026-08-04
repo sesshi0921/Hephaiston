@@ -2,6 +2,9 @@
 
 #include "hephaiston/EditorRegistry.h"
 #include "hephaiston/EditorTypes.h"
+#include "hephaiston/PluginManager.h"
+#include "hephaiston/SceneRegistry.h"
+#include "hephaiston/SelectionManager.h"
 #include "hephaiston/ViewportRenderer.h"
 
 #include <string>
@@ -9,10 +12,12 @@
 
 namespace hephaiston {
 
+class EditorContext;
+
 class EditorShell {
 public:
     EditorShell();
-    ~EditorShell() = default;
+    ~EditorShell();
 
     EditorShell(const EditorShell&) = delete;
     EditorShell& operator=(const EditorShell&) = delete;
@@ -31,6 +36,7 @@ private:
         std::vector<HierarchyNode> children;
     };
 
+    [[nodiscard]] EditorContext makeContext();
     void loadLayoutSettings();
     void saveLayoutSettings() const;
     void drawMainMenu(bool& shouldClose);
@@ -41,12 +47,18 @@ private:
     void drawFloatingWindows();
     void drawOverlays();
     void drawHierarchyNode(const HierarchyNode& node);
+    void drawHierarchyItem(const EditorHierarchyItem& item);
+    void drawSceneObject(const SceneObject& object);
+    void drawPluginMenuItems(std::string_view menuName);
     void updateViewportInput();
     void resetViewportCamera();
     void handleSplitter(float x, float y, float height, bool leftSide);
     [[nodiscard]] ViewportVisibleRect calculateVisibleRect(ImVec2 displaySize) const;
 
+    PluginManager pluginManager_;
     EditorRegistry registry_;
+    SelectionManager selectionManager_;
+    SceneRegistry sceneRegistry_;
     EditorLayoutState layoutState_;
     ViewportStatus viewportStatus_;
     ViewportInputState viewportInput_;

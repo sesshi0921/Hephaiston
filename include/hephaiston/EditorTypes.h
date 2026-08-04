@@ -10,9 +10,26 @@
 
 namespace hephaiston {
 
+class EditorContext;
+
 enum class ViewMode {
     Mode2D,
     Mode3D,
+};
+
+enum class SceneObjectKind {
+    Unknown,
+    Project,
+    Georeference,
+    Site,
+    Boundary,
+    Regulation,
+    Envelope,
+    Building,
+    Floor,
+    Roof,
+    GeneratedModel,
+    PluginObject,
 };
 
 struct ViewportStatus {
@@ -60,27 +77,164 @@ struct ViewportInputState {
     ImVec2 dragDelta {0.0f, 0.0f};
 };
 
+struct EditorMenuVisibility {
+    bool showFile = true;
+    bool showEdit = true;
+    bool showView = true;
+    bool showAddons = true;
+    bool showWindow = true;
+    bool showHelp = true;
+    bool showFpsControl = true;
+};
+
+struct ViewportRenderSettings {
+    bool showHorizontalGrid = true;
+    bool showOriginAxes = true;
+};
+
+// Lightweight command descriptor for simple add-ons. For richer commands with
+// context-aware enable/execute logic, prefer IEditorCommand.
 struct EditorCommand {
     std::string id;
     std::string displayName;
     std::function<void()> execute;
 };
 
-class IEditorPanel {
+struct EditorMenuItem {
+    std::string id;
+    std::string menuName;
+    std::string label;
+    std::string shortcut;
+    bool selected = false;
+    bool enabled = true;
+    std::function<void()> execute;
+};
+
+struct StatusBarItem {
+    std::string id;
+    std::string text;
+    bool visible = true;
+};
+
+struct EditorHierarchyItem {
+    std::string id;
+    std::string displayName;
+    std::vector<EditorHierarchyItem> children;
+};
+
+struct SceneObject {
+    std::string id;
+    std::string displayName;
+    SceneObjectKind kind = SceneObjectKind::Unknown;
+    bool visible = true;
+    std::vector<SceneObject> children;
+};
+
+struct SelectionItem {
+    std::string id;
+    std::string displayName;
+    std::string type;
+};
+
+struct ViewportLine {
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+    float z1 = 0.0f;
+    float x2 = 0.0f;
+    float y2 = 0.0f;
+    float z2 = 0.0f;
+    ImVec4 color {1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+struct ViewportPoint {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float sizePixels = 4.0f;
+    ImVec4 color {1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+struct ViewportTriangle {
+    ImVec4 color {1.0f, 1.0f, 1.0f, 1.0f};
+    float vertices[9] {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+class IMainMenuPanel {
+public:
+    virtual ~IMainMenuPanel() = default;
+    virtual void draw() = 0;
+};
+
+class IHierarchyPanel {
+public:
+    virtual ~IHierarchyPanel() = default;
+    virtual void draw() = 0;
+};
+
+class IFloatingWindow {
+public:
+    virtual ~IFloatingWindow() = default;
+    virtual void draw() = 0;
+};
+
+class IStatusBarWidget {
+public:
+    virtual ~IStatusBarWidget() = default;
+    virtual void draw() = 0;
+};
+
+class IMenuBarContributor {
+public:
+    virtual ~IMenuBarContributor() = default;
+    virtual void draw(EditorContext& context) = 0;
+};
+
+struct RegisteredMainMenuPanel {
+    std::string id;
+    std::string displayName;
+    std::unique_ptr<IMainMenuPanel> panel;
+};
+
+struct RegisteredHierarchyPanel {
+    std::string id;
+    std::string displayName;
+    std::unique_ptr<IHierarchyPanel> panel;
+};
+
+struct RegisteredFloatingWindow {
+    std::string id;
+    std::string displayName;
+    bool open = false;
+    std::unique_ptr<IFloatingWindow> window;
+};
+
+struct RegisteredStatusBarWidget {
+    std::string id;
+    std::string displayName;
+    bool visible = true;
+    std::unique_ptr<IStatusBarWidget> widget;
+};
+
+struct RegisteredMenuBarContributor {
+    std::string id;
+    std::unique_ptr<IMenuBarContributor> contributor;
+};
+
+// Compatibility interfaces. New plugin code should prefer the loose draw-only
+// interfaces above and pass metadata through EditorRegistry registration calls.
+class IEditorPanel : public IMainMenuPanel {
 public:
     virtual ~IEditorPanel() = default;
     virtual const char* id() const = 0;
     virtual const char* displayName() const = 0;
-    virtual void draw() = 0;
 };
 
-class IEditorWindow {
+class IEditorWindow : public IFloatingWindow {
 public:
     virtual ~IEditorWindow() = default;
     virtual const char* id() const = 0;
     virtual const char* displayName() const = 0;
     virtual bool& open() = 0;
-    virtual void draw() = 0;
 };
 
 class IViewportOverlay {
@@ -88,6 +242,65 @@ public:
     virtual ~IViewportOverlay() = default;
     virtual const char* id() const = 0;
     virtual void draw(const ViewportVisibleRect& visibleRect, ViewportStatus& status, ViewMode& viewMode) = 0;
+};
+
+class IHierarchyProvider {
+public:
+    virtual ~IHierarchyProvider() = default;
+    virtual const char* id() const = 0;
+    virtual void collectHierarchy(std::vector<EditorHierarchyItem>& outItems) = 0;
+};
+
+class ISceneProvider {
+public:
+    virtual ~ISceneProvider() = default;
+    virtual const char* id() const = 0;
+    virtual void collectSceneObjects(std::vector<SceneObject>& outObjects) = 0;
+};
+
+class IViewportSceneLayer {
+public:
+    virtual ~IViewportSceneLayer() = default;
+    virtual const char* id() const = 0;
+    virtual const char* displayName() const = 0;
+    virtual bool visible() const { return true; }
+    virtual void collectViewportLines(std::vector<ViewportLine>& outLines) = 0;
+};
+
+class IViewportTool {
+public:
+    virtual ~IViewportTool() = default;
+    virtual const char* id() const = 0;
+    virtual const char* displayName() const = 0;
+    virtual void onActivated(EditorContext&) {}
+    virtual void onDeactivated(EditorContext&) {}
+    virtual void drawToolbar(EditorContext&) {}
+    virtual void onViewportInput(EditorContext&) {}
+};
+
+class IEditorCommand {
+public:
+    virtual ~IEditorCommand() = default;
+    virtual const char* id() const = 0;
+    virtual const char* displayName() const = 0;
+    virtual bool canExecute(EditorContext&) const { return true; }
+    virtual void execute(EditorContext&) = 0;
+};
+
+class IPropertiesPanel {
+public:
+    virtual ~IPropertiesPanel() = default;
+    virtual const char* id() const = 0;
+    virtual bool canInspect(const SelectionItem& item) const = 0;
+    virtual void draw(EditorContext& context, const SelectionItem& item) = 0;
+};
+
+class IContextMenuProvider {
+public:
+    virtual ~IContextMenuProvider() = default;
+    virtual const char* id() const = 0;
+    virtual void drawHierarchyContextMenu(EditorContext&, const std::string&) {}
+    virtual void drawViewportContextMenu(EditorContext&) {}
 };
 
 } // namespace hephaiston

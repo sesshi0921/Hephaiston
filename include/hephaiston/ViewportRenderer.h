@@ -3,7 +3,9 @@
 #include "hephaiston/EditorTypes.h"
 #include "hephaiston/Framebuffer.h"
 
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace hephaiston {
 
@@ -18,7 +20,7 @@ public:
     ViewportRenderer& operator=(ViewportRenderer&&) = delete;
 
     void resize(int width, int height);
-    void render(ViewMode mode, const ViewportStatus& status);
+    void render(ViewMode mode, const ViewportStatus& status, const ViewportRenderSettings& settings, const std::vector<std::unique_ptr<IViewportSceneLayer>>& sceneLayers);
 
     [[nodiscard]] unsigned int texture() const { return framebuffer_.texture(); }
     [[nodiscard]] int width() const { return framebuffer_.width(); }
@@ -27,7 +29,7 @@ public:
 private:
     void createPipeline();
     void destroyPipeline();
-    void updateSceneGeometry(ViewMode mode, const ViewportStatus& status);
+    void updateSceneGeometry(ViewMode mode, const ViewportStatus& status, const ViewportRenderSettings& settings, const std::vector<std::unique_ptr<IViewportSceneLayer>>& sceneLayers);
     [[nodiscard]] unsigned int compileShader(unsigned int type, const char* source) const;
     [[nodiscard]] unsigned int linkProgram(unsigned int vertexShader, unsigned int fragmentShader) const;
 

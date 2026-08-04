@@ -1,5 +1,7 @@
 #include "hephaiston/EditorShell.h"
 
+#include "hephaiston/EditorContext.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -10,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -329,10 +332,23 @@ EditorShell::EditorShell() {
     loadLayoutSettings();
 }
 
+EditorShell::~EditorShell() {
+    EditorContext context = makeContext();
+    pluginManager_.unloadAll(context);
+    // Important for DLL plugins: objects allocated by plugin modules must be
+    // destroyed while their dynamic libraries are still loaded. PluginManager
+    // keeps libraries open until its own destructor, so clearing the registry
+    // here safely releases plugin-created panels/windows/layers first.
+    registry_.clear();
+}
+
+EditorContext EditorShell::makeContext() {
+    return EditorContext(registry_, layoutState_, viewportStatus_, viewportInput_, visibleRect_, viewMode_, selectionManager_, sceneRegistry_);
+}
 
 std::string EditorShell::windowTitle() const {
-    if (!registry_.panels().empty() && activePanelIndex_ >= 0 && activePanelIndex_ < static_cast<int>(registry_.panels().size())) {
-        return std::string("Hephaiston - ") + registry_.panels()[activePanelIndex_]->displayName();
+    if (!registry_.mainMenuPanels().empty() && activePanelIndex_ >= 0 && activePanelIndex_ < static_cast<int>(registry_.mainMenuPanels().size())) {
+        return std::string("Hephaiston - ") + registry_.mainMenuPanels()[activePanelIndex_].displayName.c_str();
     }
     return "Hephaiston";
 }
@@ -357,6 +373,10 @@ void EditorShell::initializeCoreRegistry() {
 
     registry_.registerCommand({"command.focus_view", "Focus in View", [] {}});
     registry_.registerCommand({"command.generate_volume", "Generate Volume", [] {}});
+
+    EditorContext context = makeContext();
+    pluginManager_.loadAllFromDirectory(context, std::filesystem::current_path() / "plugins");
+    pluginManager_.loadAllFromDirectory(context, std::filesystem::current_path() / "build" / "plugins");
 }
 
 void EditorShell::draw(ViewportRenderer& viewportRenderer, bool& shouldClose) {
@@ -370,7 +390,7 @@ void EditorShell::draw(ViewportRenderer& viewportRenderer, bool& shouldClose) {
     const int fboWidth = std::max(1, static_cast<int>(std::round(displaySize.x)));
     const int fboHeight = std::max(1, static_cast<int>(std::round(displaySize.y - menuHeight - statusHeight)));
     viewportRenderer.resize(fboWidth, fboHeight);
-    viewportRenderer.render(viewMode_, viewportStatus_);
+    viewportRenderer.render(viewMode_, viewportStatus_, registry_.viewportRenderSettings(), registry_.viewportSceneLayers());
 
     drawMainMenu(shouldClose);
     drawViewportBackground(viewportRenderer);
@@ -417,102 +437,166 @@ void EditorShell::saveLayoutSettings() const {
     out << "maxFps " << maxFps_ << '\n';
 }
 
+void EditorShell::drawPluginMenuItems(std::string_view menuName) {
+    for (auto& item : registry_.menuItems()) {
+        if (item.menuName == menuName) {
+            const char* shortcut = item.shortcut.empty() ? nullptr : item.shortcut.c_str();
+            if (ImGui::MenuItem(item.label.c_str(), shortcut, item.selected, item.enabled)) {
+                item.execute();
+            }
+        }
+    }
+}
+
 void EditorShell::drawMainMenu(bool& shouldClose) {
     if (!ImGui::BeginMainMenuBar()) {
         return;
     }
 
-    if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Project Settings")) registry_.windows()[0]->open() = true;
+    const EditorMenuVisibility& menuVisibility = registry_.menuVisibility();
+    if (menuVisibility.showFile && ImGui::BeginMenu("File")) {
+        if (!registry_.windows().empty() && ImGui::MenuItem("Project Settings")) registry_.windows()[0]->open() = true;
+        drawPluginMenuItems("File");
         ImGui::Separator();
         if (ImGui::MenuItem("Exit")) shouldClose = true;
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Edit")) {
+    if (menuVisibility.showEdit && ImGui::BeginMenu("Edit")) {
         ImGui::MenuItem("Undo", "Ctrl+Z", false, false);
         ImGui::MenuItem("Redo", "Ctrl+Y", false, false);
+        drawPluginMenuItems("Edit");
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("View")) {
+    if (menuVisibility.showView && ImGui::BeginMenu("View")) {
         if (ImGui::MenuItem("2D Orthographic", nullptr, viewMode_ == ViewMode::Mode2D)) viewMode_ = ViewMode::Mode2D;
         if (ImGui::MenuItem("3D Perspective", nullptr, viewMode_ == ViewMode::Mode3D)) viewMode_ = ViewMode::Mode3D;
         if (ImGui::MenuItem("Reset View", "R")) resetViewportCamera();
         ImGui::Separator();
+        if (ImGui::MenuItem("Horizontal Grid", nullptr, registry_.viewportRenderSettings().showHorizontalGrid)) {
+            registry_.viewportRenderSettings().showHorizontalGrid = !registry_.viewportRenderSettings().showHorizontalGrid;
+        }
+        if (ImGui::MenuItem("Origin XYZ Axes", nullptr, registry_.viewportRenderSettings().showOriginAxes)) {
+            registry_.viewportRenderSettings().showOriginAxes = !registry_.viewportRenderSettings().showOriginAxes;
+        }
         if (ImGui::MenuItem("Status Bar", nullptr, layoutState_.showStatusBar)) {
             layoutState_.showStatusBar = !layoutState_.showStatusBar;
             saveLayoutSettings();
         }
+        drawPluginMenuItems("View");
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Addons")) {
-        if (!registry_.panels().empty()) {
-            for (int i = 0; i < static_cast<int>(registry_.panels().size()); ++i) {
-                if (ImGui::MenuItem(registry_.panels()[i]->displayName(), nullptr, i == activePanelIndex_)) {
+    if (menuVisibility.showAddons && ImGui::BeginMenu("Addons")) {
+        if (!registry_.mainMenuPanels().empty()) {
+            for (int i = 0; i < static_cast<int>(registry_.mainMenuPanels().size()); ++i) {
+                if (ImGui::MenuItem(registry_.mainMenuPanels()[i].displayName.c_str(), nullptr, i == activePanelIndex_)) {
                     activePanelIndex_ = i;
                 }
             }
+            ImGui::Separator();
         }
+        drawPluginMenuItems("Addons");
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Window")) {
+    if (menuVisibility.showWindow && ImGui::BeginMenu("Window")) {
         for (auto& window : registry_.windows()) {
             if (ImGui::MenuItem(window->displayName(), nullptr, window->open())) {
                 window->open() = true;
             }
         }
+        for (auto& window : registry_.floatingWindows()) {
+            if (ImGui::MenuItem(window.displayName.c_str(), nullptr, window.open)) {
+                window.open = true;
+            }
+        }
+        drawPluginMenuItems("Window");
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("Help")) {
+    if (menuVisibility.showHelp && ImGui::BeginMenu("Help")) {
         if (ImGui::MenuItem("About")) {
             for (auto& window : registry_.windows()) {
                 if (std::string_view(window->id()) == "window.about") window->open() = true;
             }
         }
+        drawPluginMenuItems("Help");
         ImGui::EndMenu();
     }
 
-
-
-    ImGuiIO& io = ImGui::GetIO();
-    constexpr float fpsButtonWidth = 122.0f;
-    const float rightX = std::max(ImGui::GetCursorPosX() + 8.0f, ImGui::GetWindowWidth() - fpsButtonWidth - 8.0f);
-    ImGui::SetCursorPosX(rightX);
-
-    // Use a completely stable ImGui ID and draw the changing FPS text manually.
-    // This avoids losing click state when the visible FPS number changes every frame.
-    const ImVec2 fpsButtonSize(fpsButtonWidth, ImGui::GetFrameHeight());
-    const bool fpsPressed = ImGui::Button("##MenuBarFpsButtonStable", fpsButtonSize);
-    const ImVec2 buttonMin = ImGui::GetItemRectMin();
-    const ImVec2 buttonMax = ImGui::GetItemRectMax();
-    char fpsLabel[32] = {};
-    std::snprintf(fpsLabel, sizeof(fpsLabel), "FPS: %.1f", io.Framerate);
-    const ImVec2 textSize = ImGui::CalcTextSize(fpsLabel);
-    ImGui::GetWindowDrawList()->AddText(
-        ImVec2(buttonMin.x + (buttonMax.x - buttonMin.x - textSize.x) * 0.5f,
-               buttonMin.y + (buttonMax.y - buttonMin.y - textSize.y) * 0.5f),
-        ImGui::GetColorU32(ImGuiCol_Text),
-        fpsLabel);
-    if (fpsPressed) {
-        ImGui::OpenPopup("##MaxFpsPopup");
+    std::set<std::string> customMenus;
+    for (const auto& item : registry_.menuItems()) {
+        if (item.menuName != "File" && item.menuName != "Edit" && item.menuName != "View" &&
+            item.menuName != "Addons" && item.menuName != "Window" && item.menuName != "Help") {
+            customMenus.insert(item.menuName);
+        }
     }
-    if (ImGui::BeginPopup("##MaxFpsPopup")) {
-        ImGui::TextUnformatted("Max FPS");
-        ImGui::Separator();
-        ImGui::SetNextItemWidth(140.0f);
-        if (ImGui::InputInt("##MaxFpsInput", &maxFps_, 0, 0)) {
-            saveLayoutSettings();
+    for (const auto& menuName : customMenus) {
+        if (ImGui::BeginMenu(menuName.c_str())) {
+            drawPluginMenuItems(menuName);
+            ImGui::EndMenu();
         }
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            saveLayoutSettings();
+    }
+
+    EditorContext context = makeContext();
+    if (!registry_.viewportTools().empty() && ImGui::BeginMenu("Tools")) {
+        const IViewportTool* activeTool = registry_.activeViewportTool();
+        for (const auto& tool : registry_.viewportTools()) {
+            if (!tool) {
+                continue;
+            }
+            const bool selected = activeTool && std::string_view(activeTool->id()) == tool->id();
+            if (ImGui::MenuItem(tool->displayName(), nullptr, selected)) {
+                registry_.setActiveViewportTool(tool->id(), context);
+            }
         }
-        ImGui::SameLine();
-        ImGui::TextUnformatted(maxFps_ <= 0 ? "Unlimited" : "fps");
-        ImGui::TextDisabled("0 or less = Unlimited");
-        ImGui::EndPopup();
+        ImGui::EndMenu();
+    }
+
+    for (auto& contributor : registry_.menuBarContributors()) {
+        if (contributor.contributor) {
+            contributor.contributor->draw(context);
+        }
+    }
+
+    if (menuVisibility.showFpsControl) {
+        ImGuiIO& io = ImGui::GetIO();
+        constexpr float fpsButtonWidth = 122.0f;
+        const float rightX = std::max(ImGui::GetCursorPosX() + 8.0f, ImGui::GetWindowWidth() - fpsButtonWidth - 8.0f);
+        ImGui::SetCursorPosX(rightX);
+
+        const ImVec2 fpsButtonSize(fpsButtonWidth, ImGui::GetFrameHeight());
+        const bool fpsPressed = ImGui::Button("##MenuBarFpsButtonStable", fpsButtonSize);
+        const ImVec2 buttonMin = ImGui::GetItemRectMin();
+        const ImVec2 buttonMax = ImGui::GetItemRectMax();
+        char fpsLabel[32] = {};
+        std::snprintf(fpsLabel, sizeof(fpsLabel), "FPS: %.1f", io.Framerate);
+        const ImVec2 textSize = ImGui::CalcTextSize(fpsLabel);
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(buttonMin.x + (buttonMax.x - buttonMin.x - textSize.x) * 0.5f,
+                   buttonMin.y + (buttonMax.y - buttonMin.y - textSize.y) * 0.5f),
+            ImGui::GetColorU32(ImGuiCol_Text),
+            fpsLabel);
+        if (fpsPressed) {
+            ImGui::OpenPopup("##MaxFpsPopup");
+        }
+        if (ImGui::BeginPopup("##MaxFpsPopup")) {
+            ImGui::TextUnformatted("Max FPS");
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::InputInt("##MaxFpsInput", &maxFps_, 0, 0)) {
+                saveLayoutSettings();
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                saveLayoutSettings();
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted(maxFps_ <= 0 ? "Unlimited" : "fps");
+            ImGui::TextDisabled("0 or less = Unlimited");
+            ImGui::EndPopup();
+        }
     }
 
     ImGui::EndMainMenuBar();
 }
+
 
 void EditorShell::drawViewportBackground(ViewportRenderer& viewportRenderer) {
     const ImVec2 displaySize = ImGui::GetIO().DisplaySize;
@@ -553,14 +637,14 @@ void EditorShell::drawLeftPanel() {
             layoutState_.leftPanelCollapsed = true;
             saveLayoutSettings();
         }
-        if (!registry_.panels().empty()) {
+        if (!registry_.mainMenuPanels().empty()) {
             ImGui::SeparatorText("Addons");
-            activePanelIndex_ = std::clamp(activePanelIndex_, 0, static_cast<int>(registry_.panels().size()) - 1);
-            const char* current = registry_.panels()[activePanelIndex_]->displayName();
+            activePanelIndex_ = std::clamp(activePanelIndex_, 0, static_cast<int>(registry_.mainMenuPanels().size()) - 1);
+            const char* current = registry_.mainMenuPanels()[activePanelIndex_].displayName.c_str();
             if (ImGui::BeginCombo("Active", current)) {
-                for (int i = 0; i < static_cast<int>(registry_.panels().size()); ++i) {
+                for (int i = 0; i < static_cast<int>(registry_.mainMenuPanels().size()); ++i) {
                     const bool selected = i == activePanelIndex_;
-                    if (ImGui::Selectable(registry_.panels()[i]->displayName(), selected)) {
+                    if (ImGui::Selectable(registry_.mainMenuPanels()[i].displayName.c_str(), selected)) {
                         activePanelIndex_ = i;
                     }
                     if (selected) ImGui::SetItemDefaultFocus();
@@ -568,7 +652,7 @@ void EditorShell::drawLeftPanel() {
                 ImGui::EndCombo();
             }
             ImGui::Separator();
-            registry_.panels()[activePanelIndex_]->draw();
+            registry_.mainMenuPanels()[activePanelIndex_].panel->draw();
         }
     }
     ImGui::End();
@@ -593,10 +677,52 @@ void EditorShell::drawRightPanel() {
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::Begin("##RightSidePanel", nullptr, flags);
-    if (!layoutState_.rightPanelCollapsed && !hierarchyRoot_.name.empty()) {
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + kPanelToggleButtonSize.y + 6.0f);
-        ImGui::SeparatorText("Hierarchy");
-        drawHierarchyNode(hierarchyRoot_);
+    if (!layoutState_.rightPanelCollapsed) {
+        std::vector<EditorHierarchyItem> hierarchyItems;
+        for (auto& provider : registry_.hierarchyProviders()) {
+            if (provider) {
+                provider->collectHierarchy(hierarchyItems);
+            }
+        }
+        std::vector<SceneObject> sceneProviderObjects;
+        for (auto& provider : registry_.sceneProviders()) {
+            if (provider) {
+                provider->collectSceneObjects(sceneProviderObjects);
+            }
+        }
+        if (!hierarchyRoot_.name.empty() || !hierarchyItems.empty() || !sceneRegistry_.rootObjects().empty() || !sceneProviderObjects.empty() || !registry_.hierarchyPanels().empty()) {
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + kPanelToggleButtonSize.y + 6.0f);
+            ImGui::SeparatorText("Hierarchy");
+            if (!hierarchyRoot_.name.empty()) {
+                drawHierarchyNode(hierarchyRoot_);
+            }
+            for (const auto& object : sceneRegistry_.rootObjects()) {
+                drawSceneObject(object);
+            }
+            for (const auto& object : sceneProviderObjects) {
+                drawSceneObject(object);
+            }
+            for (const auto& item : hierarchyItems) {
+                drawHierarchyItem(item);
+            }
+            for (auto& panel : registry_.hierarchyPanels()) {
+                if (panel.panel) {
+                    if (!panel.displayName.empty()) {
+                        ImGui::SeparatorText(panel.displayName.c_str());
+                    }
+                    panel.panel->draw();
+                }
+            }
+            if (const SelectionItem* selected = selectionManager_.primary()) {
+                EditorContext context = makeContext();
+                for (auto& panel : registry_.propertiesPanels()) {
+                    if (panel && panel->canInspect(*selected)) {
+                        ImGui::SeparatorText("Properties");
+                        panel->draw(context, *selected);
+                    }
+                }
+            }
+        }
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -638,6 +764,22 @@ void EditorShell::drawStatusBar() {
                 viewportInput_.panning ? "yes" : "no",
                 viewportInput_.wheel,
                 selectedHierarchyItem_.c_str());
+    for (const auto& item : registry_.statusBarItems()) {
+        if (item.visible) {
+            ImGui::SameLine();
+            ImGui::TextUnformatted("|");
+            ImGui::SameLine();
+            ImGui::TextUnformatted(item.text.c_str());
+        }
+    }
+    for (auto& widget : registry_.statusBarWidgets()) {
+        if (widget.visible && widget.widget) {
+            ImGui::SameLine();
+            ImGui::TextUnformatted("|");
+            ImGui::SameLine();
+            widget.widget->draw();
+        }
+    }
     ImGui::End();
 }
 
@@ -654,11 +796,27 @@ void EditorShell::drawFloatingWindows() {
         ImGui::End();
         window->open() = open;
     }
+    for (auto& window : registry_.floatingWindows()) {
+        if (!window.open || !window.window) {
+            continue;
+        }
+        ImGui::SetNextWindowSize(ImVec2(360.0f, 240.0f), ImGuiCond_FirstUseEver);
+        bool open = window.open;
+        if (ImGui::Begin(window.displayName.c_str(), &open)) {
+            window.window->draw();
+        }
+        ImGui::End();
+        window.open = open;
+    }
 }
 
 void EditorShell::drawOverlays() {
     for (auto& overlay : registry_.overlays()) {
         overlay->draw(visibleRect_, viewportStatus_, viewMode_);
+    }
+    if (IViewportTool* activeTool = registry_.activeViewportTool()) {
+        EditorContext context = makeContext();
+        activeTool->drawToolbar(context);
     }
 }
 
@@ -685,6 +843,79 @@ void EditorShell::drawHierarchyNode(const HierarchyNode& node) {
     if (!node.children.empty() && open) {
         for (const auto& child : node.children) {
             drawHierarchyNode(child);
+        }
+        ImGui::TreePop();
+    }
+}
+
+void EditorShell::drawHierarchyItem(const EditorHierarchyItem& item) {
+    const std::string label = item.displayName.empty() ? item.id : item.displayName;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (item.children.empty()) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    if (selectedHierarchyItem_ == item.id) flags |= ImGuiTreeNodeFlags_Selected;
+
+    const bool open = ImGui::TreeNodeEx(label.c_str(), flags);
+    if (ImGui::IsItemClicked()) {
+        selectedHierarchyItem_ = item.id;
+        selectionManager_.select({item.id, label, "HierarchyItem"});
+    }
+    if (ImGui::BeginPopupContextItem()) {
+        ImGui::TextDisabled("%s", label.c_str());
+        ImGui::Separator();
+        if (ImGui::MenuItem("Rename")) {}
+        if (ImGui::MenuItem("Duplicate")) {}
+        if (ImGui::MenuItem("Delete")) {}
+        if (ImGui::MenuItem("Hide / Show")) {}
+        if (ImGui::MenuItem("Focus in View")) {}
+        EditorContext context = makeContext();
+        for (auto& provider : registry_.contextMenuProviders()) {
+            if (provider) {
+                provider->drawHierarchyContextMenu(context, item.id);
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    if (!item.children.empty() && open) {
+        for (const auto& child : item.children) {
+            drawHierarchyItem(child);
+        }
+        ImGui::TreePop();
+    }
+}
+
+void EditorShell::drawSceneObject(const SceneObject& object) {
+    const std::string label = object.displayName.empty() ? object.id : object.displayName;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+    if (object.children.empty()) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    if (selectedHierarchyItem_ == object.id) flags |= ImGuiTreeNodeFlags_Selected;
+    if (!object.visible) flags |= ImGuiTreeNodeFlags_Bullet;
+
+    const bool open = ImGui::TreeNodeEx(label.c_str(), flags);
+    if (ImGui::IsItemClicked()) {
+        selectedHierarchyItem_ = object.id;
+        selectionManager_.select({object.id, label, "SceneObject"});
+    }
+    if (ImGui::BeginPopupContextItem()) {
+        ImGui::TextDisabled("%s", label.c_str());
+        ImGui::Separator();
+        if (ImGui::MenuItem("Rename")) {}
+        if (ImGui::MenuItem("Duplicate")) {}
+        if (ImGui::MenuItem("Delete")) {}
+        if (ImGui::MenuItem(object.visible ? "Hide" : "Show")) {}
+        if (ImGui::MenuItem("Focus in View")) {}
+        EditorContext context = makeContext();
+        for (auto& provider : registry_.contextMenuProviders()) {
+            if (provider) {
+                provider->drawHierarchyContextMenu(context, object.id);
+            }
+        }
+        ImGui::EndPopup();
+    }
+
+    if (!object.children.empty() && open) {
+        for (const auto& child : object.children) {
+            drawSceneObject(child);
         }
         ImGui::TreePop();
     }
@@ -808,6 +1039,11 @@ void EditorShell::updateViewportInput() {
     viewportStatus_.gridSizeMeters = step * power;
     const double denominator = std::round(8192.0 / std::max(0.000001, viewportStatus_.zoom));
     viewportStatus_.scaleDenominator = static_cast<int>(std::clamp(denominator, 10.0, 2147483647.0));
+
+    if (IViewportTool* activeTool = registry_.activeViewportTool()) {
+        EditorContext context = makeContext();
+        activeTool->onViewportInput(context);
+    }
 }
 
 void EditorShell::resetViewportCamera() {
