@@ -1,0 +1,10 @@
+# Build artifacts
+build/
+cmake-build-*/
+
+# Runtime layout/state
+hephaiston_imgui.ini
+hephaiston_layout.ini
+
+# macOS
+.DS_Store
