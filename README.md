@@ -35,15 +35,12 @@ Hephaiston（ヘパイストン）は、建築設計ワークフローをプラ�
 - C++20 対応コンパイラ
 - GLFW 3
 - OpenGL
-- Dear ImGui Docking Branch
 - spdlog（`external/cpp-logger` の依存）
 
-このリポジトリでは Dear ImGui Docking Branch を `external/imgui` に配置する構成です。
-未配置の場合は以下で取得してください。
-
-```bash
-git clone --depth 1 --branch docking https://github.com/ocornut/imgui.git external/imgui
-```
+Dear ImGui Docking Branch は、固定リビジョンを CMake `FetchContent` で
+`build/_deps/hephaiston_imgui-src/` へ取得します。Earth の低ズーム背景テクスチャも、
+初回 configure 時に NASA の公式 Blue Marble を
+`build/assets/nasa_bluemarble_2048.png` へ取得します。どちらもリポジトリ管理外です。
 
 macOS + Homebrew の場合、GLFW は以下で導入できます。
 
@@ -79,9 +76,10 @@ cmake --build build --target atlas_polys -j 8
 ```text
 .
 ├── CMakeLists.txt
+├── cmake/
+│   └── RuntimeAssets.cmake      # リポジトリ外へ取得するランタイム画像
 ├── README.md
 ├── external/
-│   ├── imgui/                  # Dear ImGui Docking Branch
 │   └── cpp-logger/             # Git submodule: Core共有の非同期ログ実装
 ├── include/                    # プラグイン向け短縮 forwarding headers
 ├── include/hephaiston/
@@ -191,7 +189,7 @@ public:
 
 `cmake --build build --target atlas_polys` 実行後、`build/plugins/atlas_polys.so`（環境により拡張子は異なります）がPlugin Galleryの候補として表示されます。起動時にはプラグインDLLを一切自動ロードせず、最初にPlugin Galleryを開いてカードから明示的にロードします。閉じた後も `Plugins > Plugin Gallery...` から再表示できます。プラグインはCore所有のFBOに `IViewportSceneLayer` として描画し、別のGLFWウィンドウは作成しません。
 
-- **Earth**: 同梱のNASA Blue Marble（2048×1024）を低ズーム背景として球体へ貼り付けます。近接時は、画面範囲と縮尺から選んだ国土地理院XYZタイルを曲面パッチとして重ね、`.hephaiston_earth_tile_cache/` へ保存します。Planar Mapで選んだ標準地図・航空写真・色別標高図のレイヤー設定はEarthビューでも保持され、ズームアウト後に再接近しても同じレイヤーで復帰します。タイルのHTTP取得はバックグラウンドスレッドで行い、現在の縮尺に加えて前後2段階の縮尺を先読みします。Core orbitカメラと球面レイ交差ピッキングを使い、緯線経線は重ねて描画します。
+- **Earth**: CMake が `build/assets/` へ取得するNASA Blue Marble（2048×1024）を低ズーム背景として球体へ貼り付けます。近接時は、画面範囲と縮尺から選んだ国土地理院XYZタイルを曲面パッチとして重ね、`.hephaiston_earth_tile_cache/` へ保存します。Planar Mapで選んだ標準地図・航空写真・色別標高図のレイヤー設定はEarthビューでも保持され、ズームアウト後に再接近しても同じレイヤーで復帰します。タイルのHTTP取得はバックグラウンドスレッドで行い、現在の縮尺に加えて前後2段階の縮尺を先読みします。Core orbitカメラと球面レイ交差ピッキングを使い、緯線経線は重ねて描画します。
 - **Planar Map**: Web Mercatorのパン・ズーム・ピッキングを提供します。国土地理院の色別標高図（初期表示・ラベルなし）、標準地図、航空写真のXYZタイルを現在の縮尺に対応するズームレベルでバックグラウンド取得し、`.hephaiston_tile_cache/` に保存します。`gsi_photo` 選択時は、現在の表示タイルに加え前後2段階のズームレベルを先読みし、既定で標準地図から地名・道路線を半透明オーバーレイ表示します（左パネルの `Place names and roads` で切替可能）。新しい縮尺のタイルが未到着なら、キャッシュ済みの親タイルを地理範囲に合わせて切り出して表示するため、表示領域が黒く欠けません。通信不能時は緯度経度グリッドへ安全にフォールバックします。
 - **Earth↔Planar遷移**: EarthではBlue Marble背景へ曲面の高解像度国土地理院タイルを縮尺に応じて重ねます。地表までの距離が約50 km以下になるとPlanar Mapへ、Planar Mapのズームレベルが5以下になるとEarthへ自動遷移します。どちらも中心座標とFOVから換算した縮尺を引き継ぎます。Earthモードでは縮尺バーを表示しません。左パネルのボタンで明示的に切り替えることもできます。
 - **Earth回転範囲**: Atlas PolysのEarthビューは日本の地理範囲（本土・離島を含む）へ注視位置を制限します。回転・3Dギズモ操作・Planar Mapからの復帰後も、この範囲の外側へ焦点を移動できません。
@@ -201,9 +199,10 @@ public:
 
 `modules/` はPluginやCore UIを参照せず、`plugins/atlas_polys/` のみがCore Plugin APIと各moduleを組み合わせます。現在のDLL境界は同一コンパイラ/標準ライブラリを前提とするC++ ABIです。外部配布用の長期ABIには、次段階でC ABIの関数テーブルへ移行してください。
 
-### 地表テクスチャとライセンス
+### 外部依存・地表テクスチャとライセンス
 
-- `assets/nasa_bluemarble_2048.png`: NASA Goddard Space Flight Center Scientific Visualization Studio の Blue Marble。クレジットは NASA/GSFC SVS および NASA Earth Observatory / Reto Stockli です。
+- Dear ImGui Docking Branch: CMake `FetchContent` が `build/_deps/hephaiston_imgui-src/` に固定リビジョンを取得します。オフライン環境では `-DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_IMGUI=/absolute/path/to/imgui` を指定できます。
+- NASA Blue Marble: CMake が `build/assets/nasa_bluemarble_2048.png` に取得します。クレジットは NASA/GSFC SVS および NASA Earth Observatory / Reto Stockli です。オフラインで再構成する場合は、既存ファイルを残すか `-DHEPHAISTON_EARTH_TEXTURE_PATH=/absolute/path/to/bluemarble.png` を指定してください。画像が利用できない場合も、Earthビューは緯線経線グリッドへフォールバックします。
 - `external/stb/stb_image.h`: stb single-file image loader（public domain または MIT License）。PNGのデコードだけに使用します。
 - libcurl: XYZタイルのHTTP取得に使用します（curl license）。
 

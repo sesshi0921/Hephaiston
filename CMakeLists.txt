@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 project(Hephaiston VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
+include(FetchContent)
+include(cmake/RuntimeAssets.cmake)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,10 +23,24 @@ set(CPP_LOGGER_BUILD_PYTHON OFF CACHE BOOL "Build cpp-logger Python bindings" FO
 set(CPP_LOGGER_BUILD_TESTS OFF CACHE BOOL "Build cpp-logger tests" FORCE)
 add_subdirectory(external/cpp-logger EXCLUDE_FROM_ALL)
 
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
+# Dear ImGui is intentionally fetched into the build tree rather than stored
+# in this repository.  The pinned revision is the previous repository gitlink
+# revision from the official docking branch.  Offline builds can provide an
+# existing checkout with FETCHCONTENT_SOURCE_DIR_HEPHAISTON_IMGUI.
+set(HEPHAISTON_IMGUI_GIT_TAG "11bd4e7731dbd8745a9eccacdaac837dd0d2a38b"
+    CACHE STRING "Pinned Dear ImGui docking revision")
+FetchContent_Declare(hephaiston_imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG ${HEPHAISTON_IMGUI_GIT_TAG}
+    GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable(hephaiston_imgui)
+set(IMGUI_DIR ${hephaiston_imgui_SOURCE_DIR})
 if(NOT EXISTS ${IMGUI_DIR}/imgui.h)
-    message(FATAL_ERROR "Dear ImGui docking branch not found at external/imgui. Clone it with: git clone --depth 1 --branch docking https://github.com/ocornut/imgui.git external/imgui")
+    message(FATAL_ERROR "Fetched Dear ImGui source is incomplete: ${IMGUI_DIR}")
 endif()
+
+hephaiston_prepare_runtime_assets()
 
 add_library(imgui STATIC
     ${IMGUI_DIR}/imgui.cpp

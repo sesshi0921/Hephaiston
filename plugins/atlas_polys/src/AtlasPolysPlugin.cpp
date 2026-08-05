@@ -187,7 +187,7 @@ public:
         const auto sphere = state_->earth.texturedGlobeMesh();
         ViewportTexturedMesh mesh;
         mesh.id = "atlas_polys.nasa_bluemarble";
-        mesh.texturePath = std::string(HEPHAISTON_SOURCE_DIR) + "/assets/nasa_bluemarble_2048.png";
+        mesh.texturePath = HEPHAISTON_EARTH_TEXTURE_PATH;
         mesh.vertices.reserve(sphere.vertices.size());
         for (const auto& vertex : sphere.vertices) mesh.vertices.push_back({vertex.x, vertex.y, vertex.z, vertex.u, vertex.v});
         mesh.indices = sphere.indices;

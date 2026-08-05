@@ -8,7 +8,6 @@ Hephaiston Core UI をローカルでビルドして起動するための最小�
 - C++20 対応コンパイラ
 - GLFW 3
 - OpenGL
-- Dear ImGui Docking Branch
 - spdlog（`external/cpp-logger` の依存）
 
 macOS + Homebrew の場合、GLFW は以下で導入できます。
@@ -17,13 +16,23 @@ macOS + Homebrew の場合、GLFW は以下で導入できます。
 brew install glfw spdlog
 ```
 
-## 2. Dear ImGui Docking Branch の取得
+## 2. 外部依存・地表テクスチャの取得
 
-`external/imgui` が存在しない場合は、以下を実行してください。
+Dear ImGui Docking Branch は、CMake configure 時に固定リビジョンを
+`build/_deps/hephaiston_imgui-src/` へ取得します。Earthビューの低ズーム背景に使う
+NASA Blue Marbleも、`build/assets/nasa_bluemarble_2048.png` へ取得します。
+いずれもソースリポジトリには保存されません。
+
+ネットワークに接続できない場合は、ImGuiのローカルチェックアウトとEarth画像を
+明示指定できます。
 
 ```bash
-git clone --depth 1 --branch docking https://github.com/ocornut/imgui.git external/imgui
+cmake -S . -B build \
+  -DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_IMGUI=/absolute/path/to/imgui \
+  -DHEPHAISTON_EARTH_TEXTURE_PATH=/absolute/path/to/bluemarble-2048.png
 ```
+
+Earth画像が見つからない場合でもアプリは起動し、Earthビューはグリッドへフォールバックします。
 
 ## 3. ビルド
 

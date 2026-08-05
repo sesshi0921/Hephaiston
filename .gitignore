@@ -18,5 +18,9 @@ hephaiston_geo_polygon.ini
 .hephaiston_earth_tile_cache/
 logs/
 
+# Build-time dependencies and runtime imagery are intentionally outside Git.
+/external/imgui/
+/assets/nasa_bluemarble_2048.png
+
 # macOS
 .DS_Store
