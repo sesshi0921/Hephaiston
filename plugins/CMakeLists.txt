@@ -12,3 +12,5 @@
 #
 #   #include "EditorRegistry.h"
 #   #include "ViewportRenderSettings.h"
+
+add_subdirectory(geo_polygon)

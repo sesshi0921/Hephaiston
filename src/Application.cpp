@@ -1,4 +1,5 @@
 #include "hephaiston/Application.h"
+#include "hephaiston/PlatformTrackpadGestures.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -81,6 +82,7 @@ bool Application::initialize() {
         viewportRenderer_ = std::make_unique<ViewportRenderer>();
         editorShell_ = std::make_unique<EditorShell>();
         editorShell_->initializeCoreRegistry();
+        installTrackpadGestureCallbacks(window_, this, &Application::onTrackpadPinch, &Application::onTrackpadScroll);
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "Initialization error: %s\n", ex.what());
         return false;
@@ -97,6 +99,15 @@ void Application::run() {
         const auto frameStart = Clock::now();
 
         glfwPollEvents();
+
+        if (editorShell_ && pendingTrackpadPinchDelta_ != 0.0f) {
+            editorShell_->addTrackpadPinchDelta(pendingTrackpadPinchDelta_);
+            pendingTrackpadPinchDelta_ = 0.0f;
+        }
+        if (editorShell_ && pendingTrackpadScrollDelta_ != 0.0f) {
+            editorShell_->addTrackpadScrollDelta(pendingTrackpadScrollDelta_);
+            pendingTrackpadScrollDelta_ = 0.0f;
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -136,6 +147,7 @@ void Application::run() {
 }
 
 void Application::shutdown() {
+    removeTrackpadPinchCallback();
     viewportRenderer_.reset();
     editorShell_.reset();
 
@@ -150,6 +162,18 @@ void Application::shutdown() {
         window_ = nullptr;
     }
     glfwTerminate();
+}
+
+void Application::onTrackpadPinch(void* userData, float magnification) {
+    if (auto* application = static_cast<Application*>(userData)) {
+        application->pendingTrackpadPinchDelta_ += magnification;
+    }
+}
+
+void Application::onTrackpadScroll(void* userData, float deltaY) {
+    if (auto* application = static_cast<Application*>(userData)) {
+        application->pendingTrackpadScrollDelta_ += deltaY;
+    }
 }
 
 void Application::setupImGuiStyle() {

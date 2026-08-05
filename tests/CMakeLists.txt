@@ -1,0 +1,4 @@
+add_executable(geo_module_tests GeoModuleTests.cpp)
+target_compile_features(geo_module_tests PRIVATE cxx_std_20)
+target_link_libraries(geo_module_tests PRIVATE hephaiston_geometry hephaiston_geospatial hephaiston_planar_map)
+add_test(NAME geo_module_tests COMMAND geo_module_tests)

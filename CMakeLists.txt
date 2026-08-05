@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
 project(Hephaiston VERSION 0.1.0 LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -38,7 +40,6 @@ target_include_directories(hephaiston_plugin_api INTERFACE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )
-target_link_libraries(hephaiston_plugin_api INTERFACE imgui)
 
 
 function(hephaiston_add_plugin target)
@@ -51,8 +52,15 @@ function(hephaiston_add_plugin target)
     )
     if(APPLE)
         set_target_properties(${target} PROPERTIES BUNDLE FALSE PREFIX "")
+        target_link_options(${target} PRIVATE "-Wl,-undefined,dynamic_lookup")
     endif()
 endfunction()
+
+add_subdirectory(modules/geospatial)
+add_subdirectory(modules/geometry)
+add_subdirectory(modules/native_dialog)
+add_subdirectory(modules/earth)
+add_subdirectory(modules/planar_map)
 
 # Convenience include paths for plugin subdirectories. This lets sources under
 # plugins/ include API headers directly, e.g. #include "EditorRegistry.h".
@@ -63,6 +71,12 @@ include_directories(
     ${IMGUI_DIR}/backends
 )
 
+set(HEPHAISTON_PLATFORM_INPUT_SOURCE src/PlatformTrackpadGestures.cpp)
+if(APPLE)
+    enable_language(OBJCXX)
+    set(HEPHAISTON_PLATFORM_INPUT_SOURCE src/MacTrackpadGestures.mm)
+endif()
+
 add_executable(hephaiston
     src/main.cpp
     src/Application.cpp
@@ -70,14 +84,24 @@ add_executable(hephaiston
     src/EditorShell.cpp
     src/Framebuffer.cpp
     src/PluginManager.cpp
+    ${HEPHAISTON_PLATFORM_INPUT_SOURCE}
     src/ViewportRenderer.cpp
 )
 target_include_directories(hephaiston PRIVATE include)
+target_include_directories(hephaiston PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/stb)
 target_link_libraries(hephaiston PRIVATE hephaiston_plugin_api imgui glfw OpenGL::GL ${CMAKE_DL_LIBS})
+
+if(UNIX AND NOT APPLE)
+    target_link_options(hephaiston PRIVATE -rdynamic)
+endif()
 
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/plugins/CMakeLists.txt)
     add_subdirectory(plugins)
+endif()
+
+if(BUILD_TESTING AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)
+    add_subdirectory(tests)
 endif()
 
 if(APPLE)

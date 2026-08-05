@@ -1,0 +1,5 @@
+add_library(hephaiston_earth STATIC src/EarthModule.cpp)
+target_compile_features(hephaiston_earth PUBLIC cxx_std_20)
+target_include_directories(hephaiston_earth PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+find_package(CURL REQUIRED)
+target_link_libraries(hephaiston_earth PUBLIC hephaiston_geospatial CURL::libcurl)

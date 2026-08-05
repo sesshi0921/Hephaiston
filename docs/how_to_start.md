@@ -39,12 +39,24 @@ cmake --build build -j 8
 ./build/hephaiston
 ```
 
+## Geo Polygon を使う
+
+通常のビルドで `Geo Polygon` DLL/dylibも `build/plugins/` に出力され、起動時に自動ロードされます。
+
+1. 左パネルで `Geo Polygon` を選択します。
+2. `Earth` または `Planar Map` を選択します。
+3. `Start Polygon Mode` を押し、ビュー上を左クリックして頂点を追加します。
+4. Enterまたは右クリックで確定します。Escはキャンセル、Backspace/Ctrl+Zは直前頂点削除です。
+5. Exportセクションでフォルダを選び、KMLまたはCSVを出力します。
+
+ネットワーク不要でもアプリは起動し、地球儀・平面地図ともにグリッドのフォールバックを表示します。
+
 起動すると、グリッドのみの FBO ビューポート、空の左右パネル、上部メニューを持つ Hephaiston Core UI が表示されます。
 
 ## 5. 基本操作
 
-- 左パネル: Core 単体では空です。将来アドオン登録時に操作 UI を表示します。
-- 右パネル: Core 単体では空です。将来アドオン/設計データ登録時にヒエラルキーを表示します。
+- 左パネル: Core 単体では空です。将来プラグイン登録時に操作 UI を表示します。
+- 右パネル: Core 単体では空です。将来プラグイン/設計データ登録時にヒエラルキーを表示します。
 - 上部メニュー: フローティングウィンドウの表示
 - メニューバー右端の `FPS: XXX`: 独立したクリック領域。クリックで max FPS を数値入力（0以下は Unlimited、デフォルト 60）
 - 左下の小型スケールバー: 0.2m〜10,000,000m範囲で表示。ホバーで詳細表示、クリックで固定、`×` で閉じる
@@ -52,7 +64,7 @@ cmake --build build -j 8
 - 右下ギズモ: 方位/軸表示
 - 2D ギズモ: 上が N、右が E
 - 3D ギズモ: E/N/Z 軸表示。ギズモをドラッグして orbit 回転
-- OSウィンドウタイトル: Core 単体では `Hephaiston`、アドオン有効時は `Hephaiston - {アドオン名}`
+- OSウィンドウタイトル: Core 単体では `Hephaiston`、プラグイン有効時は `Hephaiston - {プラグイン名}`
 - FBO ビュー: クリック、ドラッグ、ホイール入力の取得
 - 3D ビュー: 左ドラッグで orbit 回転、右/中ドラッグでパン、ホイールでドリー
 - 2D ビュー: ドラッグでパン、ホイールでカーソル位置中心ズーム
@@ -62,7 +74,7 @@ cmake --build build -j 8
 
 プラグイン/DLL化前段として、`EditorRegistry` から以下を登録・制御できます。
 
-- `menuVisibility()` で File / Edit / View / Addons / Window / Help / FPS 表示のON/OFF
+- `menuVisibility()` で File / Edit / View / Plugins / Window / Help / FPS 表示のON/OFF
 - `viewportRenderSettings()` で FBO の水平グリッド、原点XYZ軸のON/OFF
 - `registerMenuItem()` でメニューバー項目を追加
 - `registerMainMenuPanel()` で `IMainMenuPanel` 継承UIを左メインパネルへ追加
@@ -81,6 +93,16 @@ Core API は `include/` 直下にも forwarding header を用意しています�
 #include "ViewportSceneLayer.h"
 #include "PluginAPI.h"
 ```
+
+`ViewportRenderSettings::showViewModeToggle = false;` にすると、Core標準のFBO左上2D/3D切替ボタンを隠せます。Plugin独自のビュー切替UIを提供する場合に使用してください。
+
+`ViewportNavigationSettings` は、表示上の `1.00x` を従来の `0.75x` 相当として校正しています。入力処理側では `effectiveZoomSensitivity()` / `effectiveMoveSensitivity()` を使用してください。3D orbitには距離適応版の `effectiveOrbitZoomSensitivity()` / `effectiveOrbitMoveSensitivity()` もあります。
+
+`ViewportNavigationSettings::trackpadZoomGestureMode` で、既定の `TrackpadZoomGestureMode::TwoFingerScroll` と `TrackpadZoomGestureMode::Pinch` を切り替えられます。macOSのPinch入力はCoreのネイティブイベントブリッジが供給します。
+
+### 6.3 DLLの動的ロード
+
+`Plugins` メニューの `Load Plugin DLL...` へDLL/dylib/shared libraryのパスを入力すると、実行中にロードできます。`Rescan Plugin Directories` は `plugins/` と `build/plugins/` を探索します。`Unload All Loaded Plugins` は登録済みのプラグイン拡張を先に破棄してからDLLを閉じ、Core UIを再構築します。
 
 プラグインターゲットでは、推奨として `hephaiston_plugin_api` をリンクしてください。
 

@@ -24,6 +24,10 @@ public:
 
     void initializeCoreRegistry();
     void draw(ViewportRenderer& viewportRenderer, bool& shouldClose);
+    // Native platform gesture bridges submit magnification deltas here. They
+    // are consumed once by the next viewport input update.
+    void addTrackpadPinchDelta(float magnification);
+    void addTrackpadScrollDelta(float deltaY);
 
     [[nodiscard]] EditorRegistry& registry() { return registry_; }
     [[nodiscard]] const EditorLayoutState& layoutState() const { return layoutState_; }
@@ -50,6 +54,9 @@ private:
     void drawHierarchyItem(const EditorHierarchyItem& item);
     void drawSceneObject(const SceneObject& object);
     void drawPluginMenuItems(std::string_view menuName);
+    void registerCoreExtensions();
+    void loadPluginsFromKnownDirectories();
+    void unloadAllPlugins();
     void updateViewportInput();
     void resetViewportCamera();
     void handleSplitter(float x, float y, float height, bool leftSide);
@@ -62,6 +69,8 @@ private:
     EditorLayoutState layoutState_;
     ViewportStatus viewportStatus_;
     ViewportInputState viewportInput_;
+    float pendingTrackpadPinchDelta_ = 0.0f;
+    float pendingTrackpadScrollDelta_ = 0.0f;
     ViewportVisibleRect visibleRect_;
     ViewMode viewMode_ = ViewMode::Mode3D;
     bool viewportDragActive_ = false;

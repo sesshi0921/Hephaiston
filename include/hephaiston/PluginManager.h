@@ -18,7 +18,10 @@ public:
     PluginManager& operator=(const PluginManager&) = delete;
 
     void loadAllFromDirectory(EditorContext& context, const std::filesystem::path& directory);
+    bool loadPlugin(EditorContext& context, const std::filesystem::path& path);
     void unloadAll(EditorContext& context);
+    // Call only after plugin-owned EditorRegistry objects were destroyed.
+    void releaseUnloadedLibraries();
 
     [[nodiscard]] const std::vector<PluginDescriptor>& loadedPlugins() const { return descriptors_; }
     [[nodiscard]] const std::vector<std::string>& loadErrors() const { return loadErrors_; }

@@ -1,0 +1,4 @@
+add_library(hephaiston_geometry STATIC src/PolygonValidation.cpp)
+target_compile_features(hephaiston_geometry PUBLIC cxx_std_20)
+target_include_directories(hephaiston_geometry PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(hephaiston_geometry PUBLIC hephaiston_geospatial)

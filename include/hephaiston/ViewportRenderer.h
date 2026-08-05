@@ -4,6 +4,7 @@
 #include "hephaiston/Framebuffer.h"
 
 #include <memory>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@ private:
     void createPipeline();
     void destroyPipeline();
     void updateSceneGeometry(ViewMode mode, const ViewportStatus& status, const ViewportRenderSettings& settings, const std::vector<std::unique_ptr<IViewportSceneLayer>>& sceneLayers);
+    void drawTexturedMeshes(const std::vector<ViewportTexturedMesh>& meshes, const float* mvp);
     [[nodiscard]] unsigned int compileShader(unsigned int type, const char* source) const;
     [[nodiscard]] unsigned int linkProgram(unsigned int vertexShader, unsigned int fragmentShader) const;
 
@@ -37,7 +39,16 @@ private:
     unsigned int program_ = 0;
     unsigned int vao_ = 0;
     unsigned int vbo_ = 0;
+    unsigned int pointVao_ = 0;
+    unsigned int pointVbo_ = 0;
+    unsigned int texturedProgram_ = 0;
+    unsigned int texturedVao_ = 0;
+    unsigned int texturedVbo_ = 0;
+    unsigned int texturedEbo_ = 0;
     int vertexCount_ = 0;
+    int pointCount_ = 0;
+    std::vector<ViewportTexturedMesh> texturedMeshes_;
+    std::unordered_map<std::string, unsigned int> textures_;
 };
 
 } // namespace hephaiston

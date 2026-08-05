@@ -22,6 +22,8 @@ public:
     void run();
 
 private:
+    static void onTrackpadPinch(void* userData, float magnification);
+    static void onTrackpadScroll(void* userData, float deltaY);
     void shutdown();
     void setupImGuiStyle();
 
@@ -29,6 +31,8 @@ private:
     std::unique_ptr<EditorShell> editorShell_;
     std::unique_ptr<ViewportRenderer> viewportRenderer_;
     std::string currentWindowTitle_ = "Hephaiston";
+    float pendingTrackpadPinchDelta_ = 0.0f;
+    float pendingTrackpadScrollDelta_ = 0.0f;
 };
 
 } // namespace hephaiston

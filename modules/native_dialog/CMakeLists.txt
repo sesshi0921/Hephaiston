@@ -1,0 +1,6 @@
+add_library(hephaiston_native_dialog STATIC src/NativeFolderDialog.cpp)
+target_compile_features(hephaiston_native_dialog PUBLIC cxx_std_20)
+target_include_directories(hephaiston_native_dialog PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(WIN32)
+    target_link_libraries(hephaiston_native_dialog PUBLIC ole32 shell32)
+endif()

@@ -51,8 +51,23 @@ void PluginManager::loadAllFromDirectory(EditorContext& context, const std::file
         if (!entry.is_regular_file() || !isDynamicLibrary(entry.path())) {
             continue;
         }
-        loadOne(context, entry.path());
+        loadPlugin(context, entry.path());
     }
+}
+
+bool PluginManager::loadPlugin(EditorContext& context, const std::filesystem::path& path) {
+    if (!std::filesystem::is_regular_file(path) || !isDynamicLibrary(path)) {
+        loadErrors_.push_back(errorMessageForPath(path, "not a supported plugin library"));
+        return false;
+    }
+    const auto normalized = std::filesystem::weakly_canonical(path);
+    for (const auto& loaded : plugins_) {
+        if (loaded && loaded->plugin && std::filesystem::weakly_canonical(loaded->path) == normalized) {
+            loadErrors_.push_back(errorMessageForPath(path, "plugin is already loaded"));
+            return false;
+        }
+    }
+    return loadOne(context, normalized);
 }
 
 void PluginManager::unloadAll(EditorContext& context) {
@@ -75,6 +90,19 @@ void PluginManager::unloadAll(EditorContext& context) {
     // destroyed by EditorShell. Closing a DLL before deleting plugin-created UI
     // objects would leave virtual tables pointing into an unloaded module.
     descriptors_.clear();
+}
+
+void PluginManager::releaseUnloadedLibraries() {
+    for (auto& loaded : plugins_) {
+        if (!loaded || loaded->plugin || !loaded->library) continue;
+#if defined(_WIN32)
+        FreeLibrary(reinterpret_cast<HMODULE>(loaded->library));
+#else
+        dlclose(loaded->library);
+#endif
+        loaded->library = nullptr;
+    }
+    std::erase_if(plugins_, [](const auto& loaded) { return !loaded || (!loaded->plugin && !loaded->library); });
 }
 
 bool PluginManager::loadOne(EditorContext& context, const std::filesystem::path& path) {

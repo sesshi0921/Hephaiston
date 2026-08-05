@@ -5,6 +5,9 @@ cmake-build-*/
 # Runtime layout/state
 hephaiston_imgui.ini
 hephaiston_layout.ini
+hephaiston_geo_polygon.ini
+.hephaiston_tile_cache/
+.hephaiston_earth_tile_cache/
 
 # macOS
 .DS_Store
