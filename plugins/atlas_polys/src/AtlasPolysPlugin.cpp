@@ -1,5 +1,5 @@
 #include "PluginAPI.h"
-#include "hephaiston/geo_polygon/GeoPolygonExporter.h"
+#include "hephaiston/atlas_polys/AtlasPolysExporter.h"
 #include "hephaiston/earth/EarthModule.h"
 #include "hephaiston/geometry/PolygonValidation.h"
 #include "hephaiston/geospatial/JapanPlaneRectangular.h"
@@ -18,7 +18,7 @@
 #include <sstream>
 #include <utility>
 
-namespace hephaiston::geo_polygon {
+namespace hephaiston::atlas_polys {
 using geospatial::GeoCoordinate;
 using geospatial::GeoPolygon;
 using geometry::Point2d;
@@ -33,7 +33,7 @@ struct GeoViewTransitionSettings {
 };
 
 struct State {
-    EditorRegistry* registry=nullptr; ViewportStatus* viewportStatus=nullptr; ViewportInputState* input=nullptr; ViewportVisibleRect* visibleRect=nullptr; ViewMode* viewMode=nullptr; SelectionManager* selection=nullptr;
+    EditorRegistry* registry=nullptr; ViewportStatus* viewportStatus=nullptr; ViewportInputState* input=nullptr; ViewportVisibleRect* visibleRect=nullptr; ViewMode* viewMode=nullptr; SelectionManager* selection=nullptr; IEditorLogger* logger=nullptr;
     earth::EarthModule earth; planar_map::PlanarMapModule map; planar_map::PlanarMapCamera mapCamera; GeoViewMode geoView=GeoViewMode::Earth;
     PolygonToolState toolState=PolygonToolState::Inactive; std::vector<GeoCoordinate> draft; std::optional<GeoCoordinate> preview; std::vector<GeoPolygon> polygons; std::uint64_t nextId=1;
     // Standard map is the reliable default. It is the familiar Tokyo/Saitama
@@ -42,9 +42,10 @@ struct State {
     std::string renameId; char renameBuffer[128]{};
     GeoViewTransitionSettings transitionSettings;
 
-    std::filesystem::path settingsPath() const { return std::filesystem::current_path() / "hephaiston_geo_polygon.ini"; }
-    void loadSettings() { std::ifstream in(settingsPath()); std::string key; std::string value; while (in >> key) { if (key == "exportFolder") { in >> std::quoted(value); if (std::filesystem::is_directory(value)) exportFolder = value; } else if (key == "exportZone") { in >> value; try { exportZone = std::clamp(std::stoi(value), 1, 19); } catch (...) {} } } }
-    void saveSettings() const { std::ofstream out(settingsPath()); if (!out) return; out << "exportFolder " << std::quoted(exportFolder.string()) << '\n' << "exportZone " << exportZone << '\n'; }
+    std::filesystem::path settingsPath() const { return std::filesystem::current_path() / "hephaiston_atlas_polys.ini"; }
+    std::filesystem::path legacySettingsPath() const { return std::filesystem::current_path() / "hephaiston_geo_polygon.ini"; }
+    void loadSettings() { std::ifstream in(settingsPath()); bool importedLegacy=false; if (!in) { in.open(legacySettingsPath()); importedLegacy=bool(in); } if (!in) { logger->debug("[AtlasPolys] No persisted plugin settings found; using defaults."); return; } std::string key; std::string value; while (in >> key) { if (key == "exportFolder") { in >> std::quoted(value); if (std::filesystem::is_directory(value)) exportFolder = value; else logger->warning("[AtlasPolys] Ignored unavailable persisted export folder: " + value); } else if (key == "exportZone") { in >> value; try { exportZone = std::clamp(std::stoi(value), 1, 19); } catch (...) { logger->warning("[AtlasPolys] Invalid persisted export zone; using default zone IX."); } } } logger->debug(importedLegacy ? "[AtlasPolys] Imported legacy Geo Polygon settings." : "[AtlasPolys] Plugin settings loaded."); }
+    void saveSettings() const { std::ofstream out(settingsPath()); if (!out) { logger->error("[AtlasPolys] Failed to write plugin settings: " + settingsPath().string()); return; } out << "exportFolder " << std::quoted(exportFolder.string()) << '\n' << "exportZone " << exportZone << '\n'; logger->debug("[AtlasPolys] Plugin settings saved."); }
 
     bool capturing() const { return toolState==PolygonToolState::Capturing || toolState==PolygonToolState::ReadyToComplete || toolState==PolygonToolState::ValidationError; }
     earth::EarthCameraState earthCamera() const { return {viewportStatus->orbitYawDegrees,viewportStatus->orbitPitchDegrees,viewportStatus->orbitDistanceMeters}; }
@@ -52,6 +53,11 @@ struct State {
         if (mapLayer == "gsi_photo") return earth::EarthImageryLayer::Photo;
         if (mapLayer == "gsi_relief") return earth::EarthImageryLayer::Relief;
         return earth::EarthImageryLayer::Standard;
+    }
+    void setMapLayer(std::string layer) {
+        if (mapLayer == layer) return;
+        logger->info("[AtlasPolys] Map imagery layer changed: " + mapLayer + " -> " + layer);
+        mapLayer = std::move(layer);
     }
     // The Core FBO spans the area behind both side panels. Its projection is
     // therefore based on the full framebuffer width, not visibleRect.width.
@@ -82,6 +88,7 @@ struct State {
         registry->viewportRenderSettings().showHorizontalGrid=false; registry->viewportRenderSettings().showOriginAxes=false;
         registry->viewportRenderSettings().showScaleBar = mode == GeoViewMode::PlanarMap;
         if (mode == GeoViewMode::Earth) constrainEarthFocusToJapan();
+        logger->info(std::string("[AtlasPolys] Switched to ") + (mode == GeoViewMode::Earth ? "Earth" : "Planar Map") + " view; layer=" + mapLayer);
     }
     void transitionToPlanarMap() {
         if (geoView != GeoViewMode::Earth) return;
@@ -93,11 +100,13 @@ struct State {
         viewportStatus->metersPerPixel = mpp;
         viewportStatus->zoom = 1.0 / mpp;
         message = "Switched to Planar Map at the matching Earth scale.";
+        logger->info("[AtlasPolys] Automatic Earth-to-Planar Map transition completed at matching scale.");
     }
     void transitionToEarth() {
         if (geoView != GeoViewMode::PlanarMap) return;
         switchView(GeoViewMode::Earth);
         message = "Switched to Earth at the matching planar-map scale.";
+        logger->info("[AtlasPolys] Automatic Planar Map-to-Earth transition completed at matching scale.");
     }
     static double planarMapZoomForMetersPerPixel(double mpp, double latitudeDegrees) {
         constexpr double kEarthRadiusMeters = 6378137.0;
@@ -106,41 +115,41 @@ struct State {
         return std::clamp(std::log2(2.0 * kPi * kEarthRadiusMeters * std::cos(latitudeRadians) /
             (256.0 * std::max(0.01, mpp))), 0.0, 18.0);
     }
-    void startCapture(){draft.clear();preview.reset();toolState=PolygonToolState::Capturing;message="Polygon Mode: click the globe or map to add vertices.";}
-    void cancelCapture(){draft.clear();preview.reset();toolState=PolygonToolState::Inactive;message="Polygon Mode cancelled.";}
-    void undoDraft(){if(!draft.empty())draft.pop_back();toolState=draft.size()>=3?PolygonToolState::ReadyToComplete:PolygonToolState::Capturing;}
+    void startCapture(){draft.clear();preview.reset();toolState=PolygonToolState::Capturing;message="Polygon Mode: click the globe or map to add vertices.";logger->info("[AtlasPolys] Polygon capture started.");}
+    void cancelCapture(){const auto discarded=draft.size();draft.clear();preview.reset();toolState=PolygonToolState::Inactive;message="Polygon Mode cancelled.";logger->info("[AtlasPolys] Polygon capture cancelled; discarded " + std::to_string(discarded) + " draft vertices.");}
+    void undoDraft(){if(draft.empty()){logger->warning("[AtlasPolys] Undo requested with no draft vertices.");return;}draft.pop_back();toolState=draft.size()>=3?PolygonToolState::ReadyToComplete:PolygonToolState::Capturing;logger->debug("[AtlasPolys] Removed last draft vertex; remaining=" + std::to_string(draft.size()));}
     void addVertex(const GeoCoordinate& c){
-        if(!geospatial::isValid(c)){message="Point rejected: invalid geographic coordinate.";toolState=PolygonToolState::ValidationError;return;}
-        auto pts=projected(draft); if(pts.size()!=draft.size()){message="Point rejected: projection failed.";toolState=PolygonToolState::ValidationError;return;}
-        auto p=geospatial::projectToJapanPlane(c,draft.empty()?exportZone:geospatial::suggestedJapanPlaneZone(draft.front())); if(!p){message="Point rejected: projection failed.";toolState=PolygonToolState::ValidationError;return;}
-        const auto check=geometry::validateOpenRingCandidate(pts,{p->eastingMeters,p->northingMeters}); if(!check.valid()){message=check.message;toolState=PolygonToolState::ValidationError;return;}
-        draft.push_back(c);toolState=draft.size()>=3?PolygonToolState::ReadyToComplete:PolygonToolState::Capturing;message="Vertex added.";
+        if(!geospatial::isValid(c)){message="Point rejected: invalid geographic coordinate.";toolState=PolygonToolState::ValidationError;logger->error("[AtlasPolys] Rejected vertex: invalid geographic coordinate.");return;}
+        auto pts=projected(draft); if(pts.size()!=draft.size()){message="Point rejected: projection failed.";toolState=PolygonToolState::ValidationError;logger->error("[AtlasPolys] Rejected vertex: draft coordinate projection failed.");return;}
+        auto p=geospatial::projectToJapanPlane(c,draft.empty()?exportZone:geospatial::suggestedJapanPlaneZone(draft.front())); if(!p){message="Point rejected: projection failed.";toolState=PolygonToolState::ValidationError;logger->error("[AtlasPolys] Rejected vertex: candidate coordinate projection failed.");return;}
+        const auto check=geometry::validateOpenRingCandidate(pts,{p->eastingMeters,p->northingMeters}); if(!check.valid()){message=check.message;toolState=PolygonToolState::ValidationError;logger->warning("[AtlasPolys] Rejected vertex: " + check.message);return;}
+        draft.push_back(c);toolState=draft.size()>=3?PolygonToolState::ReadyToComplete:PolygonToolState::Capturing;message="Vertex added.";logger->info("[AtlasPolys] Vertex accepted; count=" + std::to_string(draft.size()) + ", lon=" + std::to_string(c.longitudeDegrees) + ", lat=" + std::to_string(c.latitudeDegrees));
     }
     void complete(){
-        auto pts=projected(draft); const auto check=geometry::validateClosedRing(pts); if(!check.valid()){message=check.message;toolState=PolygonToolState::ValidationError;return;}
+        auto pts=projected(draft); const auto check=geometry::validateClosedRing(pts); if(!check.valid()){message=check.message;toolState=PolygonToolState::ValidationError;logger->warning("[AtlasPolys] Polygon completion rejected: " + check.message);return;}
         geometry::normalizeCounterClockwise(draft,pts);
-        GeoPolygon polygon{nextId++,"Site Polygon ",draft,true}; polygon.name += (polygon.id<10?"00":polygon.id<100?"0":"")+std::to_string(polygon.id); polygons.push_back(std::move(polygon)); draft.clear();preview.reset();toolState=PolygonToolState::Inactive;message="Polygon completed and normalized counter-clockwise.";
+        GeoPolygon polygon{nextId++,"Site Polygon ",draft,true}; polygon.name += (polygon.id<10?"00":polygon.id<100?"0":"")+std::to_string(polygon.id); logger->info("[AtlasPolys] Polygon completed: id=" + std::to_string(polygon.id) + ", vertices=" + std::to_string(polygon.vertices.size()) + ", normalized=CCW."); polygons.push_back(std::move(polygon)); draft.clear();preview.reset();toolState=PolygonToolState::Inactive;message="Polygon completed and normalized counter-clockwise.";
     }
     bool validateAllForExport(std::string& error) const { for (const auto& polygon : polygons) { const auto points=projected(polygon.vertices); const auto check=geometry::validateClosedRing(points); if (!check.valid()) { error="Polygon \""+polygon.name+"\" is invalid: "+check.message; return false; } } return true; }
-    GeoPolygon* polygonById(const std::string& id){constexpr std::string_view prefix="geo_polygon:";if(!id.starts_with(prefix))return nullptr; const auto number=id.substr(prefix.size());try{auto value=std::stoull(number);for(auto&p:polygons)if(p.id==value)return&p;}catch(...){}return nullptr;}
+    GeoPolygon* polygonById(const std::string& id){constexpr std::string_view prefix="atlas_polys:";if(!id.starts_with(prefix))return nullptr; const auto number=id.substr(prefix.size());try{auto value=std::stoull(number);for(auto&p:polygons)if(p.id==value)return&p;}catch(...){}return nullptr;}
     std::string serializeJson() const { std::ostringstream out;out<<"{\"polygons\":[";for(std::size_t i=0;i<polygons.size();++i){const auto&p=polygons[i];if(i)out<<',';out<<"{\"id\":"<<p.id<<",\"name\":\""<<p.name<<"\",\"visible\":"<<(p.visible?"true":"false")<<",\"vertices\":[";for(std::size_t n=0;n<p.vertices.size();++n){if(n)out<<',';out<<"["<<p.vertices[n].longitudeDegrees<<","<<p.vertices[n].latitudeDegrees<<"]";}out<<"]}";}out<<"]}";return out.str(); }
 };
 
 std::string escapeCsv(std::string text){std::string out="\"";for(char c:text){if(c=='\"')out+="\"\"";else out+=c;}return out+'\"';}
 std::string escapeXml(const std::string& text){std::string out;for(char c:text){if(c=='&')out+="&amp;";else if(c=='<')out+="&lt;";else if(c=='>')out+="&gt;";else out+=c;}return out;}
 
-class KmlExporter final : public IGeoPolygonExporter {
+class KmlExporter final : public IAtlasPolysExporter {
 public: std::string_view id()const override{return "kml";} std::string_view displayName()const override{return "KML";}
 ExportResult exportPolygons(const ExportRequest&r) override {if(!r.polygons)return {false,{},"No polygons supplied."};const auto file=r.folder/"site_polygons.kml";std::ofstream out(file);if(!out)return{false,{},"Unable to write KML."};out<<std::setprecision(12)<<"<?xml version=\"1.0\" encoding=\"UTF-8\"?><kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document>";for(const auto&p:*r.polygons){out<<"<Placemark><name>"<<escapeXml(p.name)<<"</name><Polygon><outerBoundaryIs><LinearRing><coordinates>";for(const auto&v:p.vertices)out<<v.longitudeDegrees<<","<<v.latitudeDegrees<<",0 ";if(!p.vertices.empty())out<<p.vertices.front().longitudeDegrees<<","<<p.vertices.front().latitudeDegrees<<",0";out<<"</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>";}out<<"</Document></kml>";return out?ExportResult{true,{file},"KML exported in EPSG:4326."}:ExportResult{false,{},"KML write failed."};}
 };
-class CsvExporter final : public IGeoPolygonExporter {
+class CsvExporter final : public IAtlasPolysExporter {
 public:std::string_view id()const override{return "coordinate_csv";}std::string_view displayName()const override{return "Coordinate CSV";}
 ExportResult exportPolygons(const ExportRequest&r)override{if(!r.polygons)return{false,{},"No polygons supplied."};const auto file=r.folder/"site_polygon_coordinates.csv";std::ofstream out(file);if(!out)return{false,{},"Unable to write CSV."};out<<std::setprecision(12);if(r.coordinateMode==ExportCoordinateMode::Geographic){out<<"polygon_id,polygon_name,vertex_index,epsg,longitude_deg,latitude_deg\n";for(const auto&p:*r.polygons)for(std::size_t i=0;i<p.vertices.size();++i)out<<p.id<<','<<escapeCsv(p.name)<<','<<i+1<<",4326,"<<p.vertices[i].longitudeDegrees<<','<<p.vertices[i].latitudeDegrees<<'\n';}else{const auto*z=geospatial::findJapanPlaneRectangularZone(r.japanPlaneZone);if(!z)return{false,{},"Invalid Japan Plane Rectangular zone."};out<<"polygon_id,polygon_name,vertex_index,epsg,zone,northing_m,easting_m\n";for(const auto&p:*r.polygons)for(std::size_t i=0;i<p.vertices.size();++i){auto c=geospatial::projectToJapanPlane(p.vertices[i],r.japanPlaneZone);if(!c)return{false,{},"Coordinate projection failed."};out<<p.id<<','<<escapeCsv(p.name)<<','<<i+1<<','<<z->epsgCode<<','<<z->zoneNumber<<','<<c->northingMeters<<','<<c->eastingMeters<<'\n';}}return out?ExportResult{true,{file},"CSV exported."}:ExportResult{false,{},"CSV write failed."};}
 };
 
 class GeoPanel final : public IMainMenuPanel { std::shared_ptr<State>s_; public:explicit GeoPanel(std::shared_ptr<State>s):s_(std::move(s)){} void draw()override{
- ImGui::TextUnformatted("Geo Polygon");ImGui::SeparatorText("View");if(ImGui::Button("Earth",{100,0}))s_->switchView(GeoViewMode::Earth);ImGui::SameLine();if(ImGui::Button("Planar Map",{100,0}))s_->switchView(GeoViewMode::PlanarMap);
- if(s_->geoView==GeoViewMode::PlanarMap){ImGui::SeparatorText("Layer");const char* current=s_->mapLayer.c_str();if(ImGui::BeginCombo("Map layer",current)){for(const auto&source:s_->map.tileSources()){if(ImGui::Selectable(source.displayName.c_str(),source.id==s_->mapLayer))s_->mapLayer=source.id;}ImGui::EndCombo();}if(s_->mapLayer=="gsi_photo")ImGui::Checkbox("Place names and roads",&s_->showPhotoPlaceNames);ImGui::TextWrapped("%s",s_->map.attribution(s_->mapLayer).c_str());if(!s_->map.lastTileError().empty())ImGui::TextDisabled("%s",s_->map.lastTileError().c_str());}
+ ImGui::TextUnformatted("Atlas Polys");ImGui::SeparatorText("View");if(ImGui::Button("Earth",{100,0}))s_->switchView(GeoViewMode::Earth);ImGui::SameLine();if(ImGui::Button("Planar Map",{100,0}))s_->switchView(GeoViewMode::PlanarMap);
+ if(s_->geoView==GeoViewMode::PlanarMap){ImGui::SeparatorText("Layer");const char* current=s_->mapLayer.c_str();if(ImGui::BeginCombo("Map layer",current)){for(const auto&source:s_->map.tileSources()){if(ImGui::Selectable(source.displayName.c_str(),source.id==s_->mapLayer))s_->setMapLayer(source.id);}ImGui::EndCombo();}if(s_->mapLayer=="gsi_photo")ImGui::Checkbox("Place names and roads",&s_->showPhotoPlaceNames);ImGui::TextWrapped("%s",s_->map.attribution(s_->mapLayer).c_str());if(!s_->map.lastTileError().empty())ImGui::TextDisabled("%s",s_->map.lastTileError().c_str());}
  ImGui::SeparatorText("Polygon");if(!s_->capturing()){if(ImGui::Button("Start Polygon Mode",{-1,0}))s_->startCapture();}else{ImGui::TextColored(ImVec4(.3f,.9f,.5f,1),"Polygon Mode: ACTIVE");ImGui::Text("Vertices: %d",int(s_->draft.size()));const bool possible=s_->draft.size()>=3;if(!possible)ImGui::BeginDisabled();if(ImGui::Button("Complete Polygon",{-1,0}))s_->complete();if(!possible)ImGui::EndDisabled();if(ImGui::Button("Undo Last Point",{-1,0}))s_->undoDraft();if(ImGui::Button("Cancel",{-1,0}))s_->cancelCapture();}if(!s_->message.empty())ImGui::TextWrapped("%s",s_->message.c_str());
  ImGui::SeparatorText("Export");int mode=int(s_->exportMode);ImGui::RadioButton("Geographic Coordinates",&mode,0);ImGui::RadioButton("Japan Plane Rectangular CS",&mode,1);s_->exportMode=ExportCoordinateMode(mode);if(s_->exportMode==ExportCoordinateMode::Geographic){ImGui::TextDisabled("CRS: WGS 84 / EPSG:4326 / Longitude, Latitude");}else{const auto*z=geospatial::findJapanPlaneRectangularZone(s_->exportZone);if(ImGui::BeginCombo("Zone",z?z->displayName.c_str():"Invalid")){for(const auto&zone:geospatial::japanPlaneRectangularZones())if(ImGui::Selectable(zone.displayName.c_str(),zone.zoneNumber==s_->exportZone))s_->exportZone=zone.zoneNumber;ImGui::EndCombo();}}
  ImGui::Checkbox("KML",&s_->exportKml);ImGui::Checkbox("Coordinate CSV",&s_->exportCsv);ImGui::TextWrapped("Folder: %s",s_->exportFolder.empty()?"(not selected)":s_->exportFolder.string().c_str());if(ImGui::Button("Select Folder...",{-1,0})){const auto result=native_dialog::selectFolder(s_->exportFolder);if(result.path){s_->exportFolder=*result.path;s_->saveSettings();}else if(!result.error.empty())s_->message=result.error;}const bool canExport=!s_->exportFolder.empty()&&!s_->polygons.empty()&&(s_->exportKml||s_->exportCsv);if(!canExport)ImGui::BeginDisabled();if(ImGui::Button("Export",{-1,0})){std::string validationError;if(!s_->validateAllForExport(validationError)){s_->message="Export failed: "+validationError;return;}std::error_code ec;const auto probe=s_->exportFolder/".hephaiston_write_probe";{std::ofstream probeFile(probe);if(!probeFile){s_->message="Export failed: output folder is not writable.";return;}}std::filesystem::remove(probe,ec);ExportRequest r{s_->exportFolder,s_->exportMode,s_->exportZone,s_->exportKml,s_->exportCsv,&s_->polygons};std::vector<std::filesystem::path>files;if(s_->exportKml){auto result=KmlExporter{}.exportPolygons(r);if(!result.success){s_->message="Export failed: "+result.message;return;}files.insert(files.end(),result.files.begin(),result.files.end());}if(s_->exportCsv){auto result=CsvExporter{}.exportPolygons(r);if(!result.success){s_->message="Export failed: "+result.message;return;}files.insert(files.end(),result.files.begin(),result.files.end());}s_->message="Export completed: "+std::to_string(s_->polygons.size())+" polygons";for(const auto&f:files)s_->message+="\n"+f.string();}if(!canExport)ImGui::EndDisabled();ImGui::TextDisabled("KML always stores coordinates in EPSG:4326. The selected projected CRS is used for coordinate CSV export."); }};
@@ -148,15 +157,15 @@ class GeoPanel final : public IMainMenuPanel { std::shared_ptr<State>s_; public:
 class GeoLayer final : public IViewportSceneLayer {
 public:
     explicit GeoLayer(std::shared_ptr<State> state) : state_(std::move(state)) {}
-    const char* id() const override { return "geo_polygon.layer"; }
-    const char* displayName() const override { return "Geo Polygon View"; }
+    const char* id() const override { return "atlas_polys.layer"; }
+    const char* displayName() const override { return "Atlas Polys View"; }
 
     void collectViewportTexturedMeshes(std::vector<ViewportTexturedMesh>& out) override {
         if (state_->geoView == GeoViewMode::PlanarMap) {
             const auto appendTiles = [&out](const std::vector<planar_map::MapTile>& tiles, std::string_view idPrefix, float z, bool transparentLightPixels) {
                 for (const auto& tile : tiles) {
                 ViewportTexturedMesh mesh;
-                mesh.id = "geo_polygon." + std::string(idPrefix) + "." + std::to_string(tile.zoom) + "." + std::to_string(tile.x) + "." + std::to_string(tile.y);
+                mesh.id = "atlas_polys." + std::string(idPrefix) + "." + std::to_string(tile.zoom) + "." + std::to_string(tile.x) + "." + std::to_string(tile.y);
                 mesh.texturePath = tile.imagePath.string();
                 mesh.vertices = {
                     {float(tile.minX), float(tile.minY), z, tile.uLeft, tile.vBottom},
@@ -177,7 +186,7 @@ public:
         }
         const auto sphere = state_->earth.texturedGlobeMesh();
         ViewportTexturedMesh mesh;
-        mesh.id = "geo_polygon.nasa_bluemarble";
+        mesh.id = "atlas_polys.nasa_bluemarble";
         mesh.texturePath = std::string(HEPHAISTON_SOURCE_DIR) + "/assets/nasa_bluemarble_2048.png";
         mesh.vertices.reserve(sphere.vertices.size());
         for (const auto& vertex : sphere.vertices) mesh.vertices.push_back({vertex.x, vertex.y, vertex.z, vertex.u, vertex.v});
@@ -205,7 +214,7 @@ public:
             add(state_->map.fallbackMapLines(state_->mapCamera,state_->mapViewport()));
         }
         for (const auto& polygon : state_->polygons) if (polygon.visible) {
-            const bool selected = state_->selection->contains("geo_polygon:" + std::to_string(polygon.id));
+            const bool selected = state_->selection->contains("atlas_polys:" + std::to_string(polygon.id));
             if (earthView) add(state_->earth.polygonLines(polygon.vertices,true,selected)); else add(state_->map.polygonLines(polygon.vertices,state_->mapCamera,true,selected));
         }
         if (state_->capturing()) { auto line=state_->draft; if (state_->preview) line.push_back(*state_->preview); if (earthView) add(state_->earth.polygonLines(line,false,false)); else add(state_->map.polygonLines(line,state_->mapCamera,false,false)); }
@@ -214,7 +223,7 @@ public:
     void collectViewportPoints(std::vector<ViewportPoint>& out) override {
         if (state_->geoView != GeoViewMode::PlanarMap) return;
         auto add = [&](const std::vector<GeoCoordinate>& vertices, ImVec4 color) { for (const auto& vertex : vertices) { auto point=state_->map.geoToLocalMeters(vertex,state_->mapCamera); if (point) out.push_back({float(point->first),float(point->second),0.1f,7.0f,color}); } };
-        for (const auto& polygon : state_->polygons) if (polygon.visible) add(polygon.vertices,state_->selection->contains("geo_polygon:"+std::to_string(polygon.id))?ImVec4(1,.72f,.18f,1):ImVec4(.25f,.85f,1,1));
+        for (const auto& polygon : state_->polygons) if (polygon.visible) add(polygon.vertices,state_->selection->contains("atlas_polys:"+std::to_string(polygon.id))?ImVec4(1,.72f,.18f,1):ImVec4(.25f,.85f,1,1));
         if (state_->capturing()) add(state_->draft,ImVec4(1,.85f,.2f,1));
     }
 private:
@@ -224,8 +233,8 @@ private:
 class GeoTool final : public IViewportTool {
 public:
     explicit GeoTool(std::shared_ptr<State> state) : state_(std::move(state)) {}
-    const char* id() const override { return "geo_polygon.tool"; }
-    const char* displayName() const override { return "Geo Polygon"; }
+    const char* id() const override { return "atlas_polys.tool"; }
+    const char* displayName() const override { return "Atlas Polys"; }
     bool handlesViewportNavigation(EditorContext&) const override {
         return state_->geoView == GeoViewMode::Earth && !state_->capturing();
     }
@@ -332,15 +341,62 @@ private:
     std::shared_ptr<State> state_;
 };
 
-class GeoHierarchy final : public IHierarchyProvider {std::shared_ptr<State>s_;public:explicit GeoHierarchy(std::shared_ptr<State>s):s_(std::move(s)){}const char*id()const override{return"geo_polygon.hierarchy";}void collectHierarchy(std::vector<EditorHierarchyItem>&out)override{EditorHierarchyItem root{"geo_polygons","Geo Polygons",{}};for(const auto&p:s_->polygons){EditorHierarchyItem poly{"geo_polygon:"+std::to_string(p.id),p.name,{}};for(std::size_t i=0;i<p.vertices.size();++i){std::ostringstream label;label<<"Vertex "<<i+1<<": ";if(s_->displayProjected){auto c=geospatial::projectToJapanPlane(p.vertices[i],s_->exportZone);if(c)label<<"N "<<std::fixed<<std::setprecision(2)<<c->northingMeters<<" m / E "<<c->eastingMeters<<" m";}else label<<std::fixed<<std::setprecision(6)<<p.vertices[i].longitudeDegrees<<"°, "<<p.vertices[i].latitudeDegrees<<"°";poly.children.push_back({"geo_polygon_vertex:"+std::to_string(p.id)+":"+std::to_string(i),label.str(),{}});}root.children.push_back(std::move(poly));}out.push_back(std::move(root));}};
+class AtlasPolysHierarchy final : public IHierarchyProvider {std::shared_ptr<State>s_;public:explicit AtlasPolysHierarchy(std::shared_ptr<State>s):s_(std::move(s)){}const char*id()const override{return"atlas_polys.hierarchy";}void collectHierarchy(std::vector<EditorHierarchyItem>&out)override{EditorHierarchyItem root{"atlas_polys","Atlas Polys",{}};for(const auto&p:s_->polygons){EditorHierarchyItem poly{"atlas_polys:"+std::to_string(p.id),p.name,{}};for(std::size_t i=0;i<p.vertices.size();++i){std::ostringstream label;label<<"Vertex "<<i+1<<": ";if(s_->displayProjected){auto c=geospatial::projectToJapanPlane(p.vertices[i],s_->exportZone);if(c)label<<"N "<<std::fixed<<std::setprecision(2)<<c->northingMeters<<" m / E "<<c->eastingMeters<<" m";}else label<<std::fixed<<std::setprecision(6)<<p.vertices[i].longitudeDegrees<<"°, "<<p.vertices[i].latitudeDegrees<<"°";poly.children.push_back({"atlas_polys_vertex:"+std::to_string(p.id)+":"+std::to_string(i),label.str(),{}});}root.children.push_back(std::move(poly));}out.push_back(std::move(root));}};
 
-class GeoProperties final : public IPropertiesPanel {std::shared_ptr<State>s_;public:explicit GeoProperties(std::shared_ptr<State>s):s_(std::move(s)){}const char*id()const override{return"geo_polygon.properties";}bool canInspect(const SelectionItem&i)const override{return i.id.starts_with("geo_polygon:");}void draw(EditorContext&,const SelectionItem&i)override{auto*p=s_->polygonById(i.id);if(!p)return;ImGui::Text("ID: %llu",static_cast<unsigned long long>(p->id));if(s_->renameId!=i.id){if(ImGui::Button("Rename")){s_->renameId=i.id;std::snprintf(s_->renameBuffer,sizeof(s_->renameBuffer),"%s",p->name.c_str());}}else{ImGui::SetNextItemWidth(-1);ImGui::InputText("Name",s_->renameBuffer,sizeof(s_->renameBuffer));if(ImGui::IsKeyPressed(ImGuiKey_Enter)&&s_->renameBuffer[0]){p->name=s_->renameBuffer;s_->renameId.clear();}ImGui::SameLine();if(ImGui::Button("Cancel"))s_->renameId.clear();}ImGui::Checkbox("Visible",&p->visible);ImGui::Checkbox("Display projected coordinates",&s_->displayProjected);}};
+class AtlasPolysProperties final : public IPropertiesPanel {std::shared_ptr<State>s_;public:explicit AtlasPolysProperties(std::shared_ptr<State>s):s_(std::move(s)){}const char*id()const override{return"atlas_polys.properties";}bool canInspect(const SelectionItem&i)const override{return i.id.starts_with("atlas_polys:");}void draw(EditorContext&,const SelectionItem&i)override{auto*p=s_->polygonById(i.id);if(!p)return;ImGui::Text("ID: %llu",static_cast<unsigned long long>(p->id));if(s_->renameId!=i.id){if(ImGui::Button("Rename")){s_->renameId=i.id;std::snprintf(s_->renameBuffer,sizeof(s_->renameBuffer),"%s",p->name.c_str());}}else{ImGui::SetNextItemWidth(-1);ImGui::InputText("Name",s_->renameBuffer,sizeof(s_->renameBuffer));if(ImGui::IsKeyPressed(ImGuiKey_Enter)&&s_->renameBuffer[0]){p->name=s_->renameBuffer;s_->renameId.clear();}ImGui::SameLine();if(ImGui::Button("Cancel"))s_->renameId.clear();}ImGui::Checkbox("Visible",&p->visible);ImGui::Checkbox("Display projected coordinates",&s_->displayProjected);}};
 
-class GeoContextMenu final : public IContextMenuProvider {std::shared_ptr<State>s_;public:explicit GeoContextMenu(std::shared_ptr<State>s):s_(std::move(s)){}const char*id()const override{return"geo_polygon.context";}void drawHierarchyContextMenu(EditorContext&,const std::string&id)override{auto*p=s_->polygonById(id);if(!p)return;ImGui::Separator();if(ImGui::MenuItem(p->visible?"Hide polygon":"Show polygon"))p->visible=!p->visible;if(ImGui::MenuItem("Delete polygon")){const auto pid=p->id;s_->polygons.erase(std::remove_if(s_->polygons.begin(),s_->polygons.end(),[pid](const auto&q){return q.id==pid;}),s_->polygons.end());s_->selection->clear();}}};
+class AtlasPolysContextMenu final : public IContextMenuProvider {std::shared_ptr<State>s_;public:explicit AtlasPolysContextMenu(std::shared_ptr<State>s):s_(std::move(s)){}const char*id()const override{return"atlas_polys.context";}void drawHierarchyContextMenu(EditorContext&,const std::string&id)override{auto*p=s_->polygonById(id);if(!p)return;ImGui::Separator();if(ImGui::MenuItem(p->visible?"Hide polygon":"Show polygon"))p->visible=!p->visible;if(ImGui::MenuItem("Delete polygon")){const auto pid=p->id;s_->polygons.erase(std::remove_if(s_->polygons.begin(),s_->polygons.end(),[pid](const auto&q){return q.id==pid;}),s_->polygons.end());s_->selection->clear();}}};
 
-class GeoStatus final : public IStatusBarWidget {std::shared_ptr<State>s_;public:explicit GeoStatus(std::shared_ptr<State>s):s_(std::move(s)){}void draw()override{ImGui::TextUnformatted(s_->geoView==GeoViewMode::Earth?"Geo: Earth":"Geo: Planar Map");ImGui::SameLine();ImGui::TextUnformatted(s_->map.attribution(s_->mapLayer).c_str());}};
+class AtlasPolysStatus final : public IStatusBarWidget {std::shared_ptr<State>s_;public:explicit AtlasPolysStatus(std::shared_ptr<State>s):s_(std::move(s)){}void draw()override{ImGui::TextUnformatted(s_->geoView==GeoViewMode::Earth?"Atlas: Earth":"Atlas: Planar Map");ImGui::SameLine();ImGui::TextUnformatted(s_->map.attribution(s_->mapLayer).c_str());}};
 
-class GeoPlugin final : public IPlugin {std::shared_ptr<State>s_;public:PluginDescriptor descriptor()const override{return{"geo_polygon","Geo Polygon","Hephaiston","0.1.0",kPluginApiVersion};}bool onLoad(EditorContext&c)override{s_=std::make_shared<State>();s_->registry=&c.registry();s_->viewportStatus=&c.viewportStatus();s_->input=&c.viewportInput();s_->visibleRect=&c.visibleRect();s_->viewMode=&c.viewMode();s_->selection=&c.selection();s_->loadSettings();s_->switchView(GeoViewMode::Earth);auto&r=c.registry();r.viewportRenderSettings().showViewModeToggle=false;r.viewportNavigationSettings().trackpadZoomGestureMode=TrackpadZoomGestureMode::Pinch;r.registerMainMenuPanel("geo_polygon.panel","Geo Polygon",std::make_unique<GeoPanel>(s_));r.registerViewportSceneLayer(std::make_unique<GeoLayer>(s_));r.registerViewportTool(std::make_unique<GeoTool>(s_));r.registerHierarchyProvider(std::make_unique<GeoHierarchy>(s_));r.registerPropertiesPanel(std::make_unique<GeoProperties>(s_));r.registerContextMenuProvider(std::make_unique<GeoContextMenu>(s_));r.registerStatusBarWidget("geo_polygon.status","Geo Status",std::make_unique<GeoStatus>(s_));r.registerMenuItem({"geo_polygon.menu","Plugins","Geo Polygon",{},true,true,[] {}});return true;}void onUnload(EditorContext&c)override{if(s_&&s_->capturing())s_->cancelCapture();if(s_)s_->saveSettings();c.registry().viewportRenderSettings().showViewModeToggle=true;c.registry().viewportNavigationSettings().trackpadZoomGestureMode=TrackpadZoomGestureMode::TwoFingerScroll;s_.reset();}};
-} // namespace hephaiston::geo_polygon
+class AtlasPolysPlugin final : public IPlugin {
+public:
+    PluginDescriptor descriptor() const override { return {"atlas_polys", "Atlas Polys", "Hephaiston", "0.1.0", kPluginApiVersion}; }
 
-HEPHAISTON_DECLARE_PLUGIN(hephaiston::geo_polygon::GeoPlugin)
+    bool onLoad(EditorContext& context) override {
+        context.logger().info("[AtlasPolys] Loading Atlas Polys plugin.");
+        state_ = std::make_shared<State>();
+        state_->registry = &context.registry();
+        state_->viewportStatus = &context.viewportStatus();
+        state_->input = &context.viewportInput();
+        state_->visibleRect = &context.visibleRect();
+        state_->viewMode = &context.viewMode();
+        state_->selection = &context.selection();
+        state_->logger = &context.logger();
+        state_->loadSettings();
+        state_->switchView(GeoViewMode::Earth);
+
+        auto& registry = context.registry();
+        registry.viewportRenderSettings().showViewModeToggle = false;
+        registry.viewportNavigationSettings().trackpadZoomGestureMode = TrackpadZoomGestureMode::Pinch;
+        registry.registerMainMenuPanel("atlas_polys.panel", "Atlas Polys", std::make_unique<GeoPanel>(state_));
+        registry.registerViewportSceneLayer(std::make_unique<GeoLayer>(state_));
+        registry.registerViewportTool(std::make_unique<GeoTool>(state_));
+        registry.registerHierarchyProvider(std::make_unique<AtlasPolysHierarchy>(state_));
+        registry.registerPropertiesPanel(std::make_unique<AtlasPolysProperties>(state_));
+        registry.registerContextMenuProvider(std::make_unique<AtlasPolysContextMenu>(state_));
+        registry.registerStatusBarWidget("atlas_polys.status", "Atlas Polys Status", std::make_unique<AtlasPolysStatus>(state_));
+        registry.registerMenuItem({"atlas_polys.menu", "Plugins", "Atlas Polys", {}, true, true, [] {}});
+        context.logger().info("[AtlasPolys] Atlas Polys plugin loaded; Earth view and pinch navigation are active.");
+        return true;
+    }
+
+    void onUnload(EditorContext& context) override {
+        context.logger().info("[AtlasPolys] Unloading Atlas Polys plugin.");
+        if (state_ && state_->capturing()) state_->cancelCapture();
+        if (state_) state_->saveSettings();
+        context.registry().viewportRenderSettings().showHorizontalGrid = true;
+        context.registry().viewportRenderSettings().showOriginAxes = true;
+        context.registry().viewportRenderSettings().showScaleBar = true;
+        context.registry().viewportRenderSettings().showViewModeToggle = true;
+        context.registry().viewportNavigationSettings().trackpadZoomGestureMode = TrackpadZoomGestureMode::TwoFingerScroll;
+        state_.reset();
+        context.logger().info("[AtlasPolys] Atlas Polys plugin unloaded.");
+    }
+
+private:
+    std::shared_ptr<State> state_;
+};
+} // namespace hephaiston::atlas_polys
+
+HEPHAISTON_DECLARE_PLUGIN(hephaiston::atlas_polys::AtlasPolysPlugin)

@@ -8,9 +8,18 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(HEPHAISTON_BUILD_WARNINGS "Enable additional compiler warnings" ON)
+option(HEPHAISTON_BUILD_BUNDLED_PLUGINS "Build bundled plugins as part of the default ALL target" OFF)
 
 find_package(OpenGL REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
+
+# cpp-logger is intentionally retained as a Git submodule.  Its optional
+# Python bindings and own test suite are disabled for the editor build; Core
+# owns the single logger instance and exposes it to DLL plugins through
+# EditorContext::logger().
+set(CPP_LOGGER_BUILD_PYTHON OFF CACHE BOOL "Build cpp-logger Python bindings" FORCE)
+set(CPP_LOGGER_BUILD_TESTS OFF CACHE BOOL "Build cpp-logger tests" FORCE)
+add_subdirectory(external/cpp-logger EXCLUDE_FROM_ALL)
 
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui)
 if(NOT EXISTS ${IMGUI_DIR}/imgui.h)
@@ -80,6 +89,7 @@ endif()
 add_executable(hephaiston
     src/main.cpp
     src/Application.cpp
+    src/EditorLogger.cpp
     src/EditorRegistry.cpp
     src/EditorShell.cpp
     src/Framebuffer.cpp
@@ -89,7 +99,8 @@ add_executable(hephaiston
 )
 target_include_directories(hephaiston PRIVATE include)
 target_include_directories(hephaiston PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/stb)
-target_link_libraries(hephaiston PRIVATE hephaiston_plugin_api imgui glfw OpenGL::GL ${CMAKE_DL_LIBS})
+target_link_libraries(hephaiston PRIVATE hephaiston_plugin_api imgui glfw OpenGL::GL cpp_logger::cpp_logger ${CMAKE_DL_LIBS})
+target_compile_definitions(hephaiston PRIVATE HEPHAISTON_LOG_DIRECTORY="${CMAKE_BINARY_DIR}/logs")
 
 if(UNIX AND NOT APPLE)
     target_link_options(hephaiston PRIVATE -rdynamic)
@@ -97,7 +108,15 @@ endif()
 
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/plugins/CMakeLists.txt)
-    add_subdirectory(plugins)
+    # Plugins are independently buildable MODULE targets.  Keep them outside
+    # Core's default ALL target so Core and each DLL have distinct build units.
+    # Use --target <plugin> or enable HEPHAISTON_BUILD_BUNDLED_PLUGINS when a
+    # single command should build everything.
+    if(HEPHAISTON_BUILD_BUNDLED_PLUGINS)
+        add_subdirectory(plugins)
+    else()
+        add_subdirectory(plugins EXCLUDE_FROM_ALL)
+    endif()
 endif()
 
 if(BUILD_TESTING AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt)

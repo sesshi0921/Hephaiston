@@ -19,6 +19,9 @@ public:
 
     void loadAllFromDirectory(EditorContext& context, const std::filesystem::path& directory);
     bool loadPlugin(EditorContext& context, const std::filesystem::path& path);
+    // Discovery is intentionally side-effect free: it never loads a DLL.
+    [[nodiscard]] std::vector<std::filesystem::path> discoverPlugins(const std::filesystem::path& directory) const;
+    [[nodiscard]] bool isPluginLoaded(const std::filesystem::path& path) const;
     void unloadAll(EditorContext& context);
     // Call only after plugin-owned EditorRegistry objects were destroyed.
     void releaseUnloadedLibraries();

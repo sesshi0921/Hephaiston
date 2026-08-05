@@ -9,11 +9,12 @@ Hephaiston Core UI をローカルでビルドして起動するための最小�
 - GLFW 3
 - OpenGL
 - Dear ImGui Docking Branch
+- spdlog（`external/cpp-logger` の依存）
 
 macOS + Homebrew の場合、GLFW は以下で導入できます。
 
 ```bash
-brew install glfw
+brew install glfw spdlog
 ```
 
 ## 2. Dear ImGui Docking Branch の取得
@@ -28,10 +29,24 @@ git clone --depth 1 --branch docking https://github.com/ocornut/imgui.git extern
 
 リポジトリルートで以下を実行します。
 
+初回clone時にサブモジュールも取得していない場合は、先に以下を実行してください。
+
+```bash
+git submodule update --init --recursive
+```
+
 ```bash
 cmake -S . -B build
 cmake --build build -j 8
 ```
+
+Coreとプラグインは別ビルド単位です。Atlas Polysをビルドする場合だけ、次を実行してください。
+
+```bash
+cmake --build build --target atlas_polys -j 8
+```
+
+Coreと組み込みプラグインを常に一括ビルドする場合は、構成時に `-DHEPHAISTON_BUILD_BUNDLED_PLUGINS=ON` を指定します。
 
 ## 4. 起動
 
@@ -39,11 +54,11 @@ cmake --build build -j 8
 ./build/hephaiston
 ```
 
-## Geo Polygon を使う
+## Atlas Polys を使う
 
-通常のビルドで `Geo Polygon` DLL/dylibも `build/plugins/` に出力され、起動時に自動ロードされます。
+`cmake --build build --target atlas_polys` を実行すると、`Atlas Polys` DLL/dylibが `build/plugins/` に出力されます。起動時はDLLを一切自動ロードせず、最初に表示されるPlugin Galleryのカードから `Load` で明示的にロードしてください。閉じた後は `Plugins > Plugin Gallery...` から再表示できます。
 
-1. 左パネルで `Geo Polygon` を選択します。
+1. 左パネルで `Atlas Polys` を選択します。
 2. `Earth` または `Planar Map` を選択します。
 3. `Start Polygon Mode` を押し、ビュー上を左クリックして頂点を追加します。
 4. Enterまたは右クリックで確定します。Escはキャンセル、Backspace/Ctrl+Zは直前頂点削除です。
@@ -100,9 +115,24 @@ Core API は `include/` 直下にも forwarding header を用意しています�
 
 `ViewportNavigationSettings::trackpadZoomGestureMode` で、既定の `TrackpadZoomGestureMode::TwoFingerScroll` と `TrackpadZoomGestureMode::Pinch` を切り替えられます。macOSのPinch入力はCoreのネイティブイベントブリッジが供給します。
 
+### 6.2 ログAPI
+
+Coreは `external/cpp-logger` サブモジュールの単一インスタンスを所有します。プラグインは追加リンク不要で、`EditorContext` からログを出力できます。
+
+```cpp
+#include "PluginAPI.h"
+
+context.logger().debug("[MyPlugin] detailed diagnostic");
+context.logger().info("[MyPlugin] operation completed");
+context.logger().warning("[MyPlugin] retrying optional request");
+context.logger().error("[MyPlugin] operation failed");
+```
+
+開発ビルドでの出力先は `build/logs/cpp_logger.log` です。Coreはプラグインの探索・DLLロード/アンロード・API不整合を、Atlas Polysはビュー遷移とポリゴン編集の受理/拒否を記録します。
+
 ### 6.3 DLLの動的ロード
 
-`Plugins` メニューの `Load Plugin DLL...` へDLL/dylib/shared libraryのパスを入力すると、実行中にロードできます。`Rescan Plugin Directories` は `plugins/` と `build/plugins/` を探索します。`Unload All Loaded Plugins` は登録済みのプラグイン拡張を先に破棄してからDLLを閉じ、Core UIを再構築します。
+`Plugins > Plugin Gallery...` は `plugins/` と `build/plugins/` を副作用なく探索し、検出したDLL/dylib/shared libraryをカード形式で表示します。カードの `Load` で実行中にロードできます。任意パスは `Load Plugin DLL...` から直接指定できます。`Unload All Loaded Plugins` は登録済みのプラグイン拡張を先に破棄してからDLLを閉じ、Core UIを再構築します。
 
 プラグインターゲットでは、推奨として `hephaiston_plugin_api` をリンクしてください。
 

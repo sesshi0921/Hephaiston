@@ -335,11 +335,15 @@ private:
 };
 } // namespace
 
-EditorShell::EditorShell() {
+EditorShell::EditorShell()
+    : logger_(createEditorLogger()) {
+    logger_->info("[Core] EditorShell construction started.");
     loadLayoutSettings();
+    logger_->debug("[Core] Editor layout settings loaded.");
 }
 
 EditorShell::~EditorShell() {
+    logger_->info("[Core] EditorShell shutdown started; unloading plugins.");
     EditorContext context = makeContext();
     pluginManager_.unloadAll(context);
     // Important for DLL plugins: objects allocated by plugin modules must be
@@ -347,6 +351,7 @@ EditorShell::~EditorShell() {
     // keeps libraries open until its own destructor, so clearing the registry
     // here safely releases plugin-created panels/windows/layers first.
     registry_.clear();
+    logger_->info("[Core] EditorShell shutdown completed.");
 }
 
 void EditorShell::addTrackpadPinchDelta(float magnification) {
@@ -358,7 +363,7 @@ void EditorShell::addTrackpadScrollDelta(float deltaY) {
 }
 
 EditorContext EditorShell::makeContext() {
-    return EditorContext(registry_, layoutState_, viewportStatus_, viewportInput_, visibleRect_, viewMode_, selectionManager_, sceneRegistry_);
+    return EditorContext(registry_, layoutState_, viewportStatus_, viewportInput_, visibleRect_, viewMode_, selectionManager_, sceneRegistry_, *logger_);
 }
 
 std::string EditorShell::windowTitle() const {
@@ -369,11 +374,14 @@ std::string EditorShell::windowTitle() const {
 }
 
 void EditorShell::initializeCoreRegistry() {
+    logger_->info("[Core] Initializing Core editor extensions. No plugins are loaded automatically.");
+    restoreCoreViewportDefaults();
     registerCoreExtensions();
-    loadPluginsFromKnownDirectories();
+    refreshPluginGallery();
 }
 
 void EditorShell::registerCoreExtensions() {
+    logger_->debug("[Core] Registering built-in editor extensions.");
     for (const auto& [id, title] : std::array<std::pair<const char*, const char*>, 8> {{
              {"window.project_settings", "Project Settings"},
              {"window.plugin_manager", "Plugin Manager"},
@@ -396,13 +404,19 @@ void EditorShell::registerCoreExtensions() {
 
 }
 
-void EditorShell::loadPluginsFromKnownDirectories() {
-    EditorContext context = makeContext();
-    pluginManager_.loadAllFromDirectory(context, std::filesystem::current_path() / "plugins");
-    pluginManager_.loadAllFromDirectory(context, std::filesystem::current_path() / "build" / "plugins");
+void EditorShell::refreshPluginGallery() {
+    const auto sourceDirectory = std::filesystem::current_path() / "plugins";
+    const auto buildDirectory = std::filesystem::current_path() / "build" / "plugins";
+    pluginGalleryCandidates_ = pluginManager_.discoverPlugins(sourceDirectory);
+    auto builtPlugins = pluginManager_.discoverPlugins(buildDirectory);
+    pluginGalleryCandidates_.insert(pluginGalleryCandidates_.end(), builtPlugins.begin(), builtPlugins.end());
+    std::sort(pluginGalleryCandidates_.begin(), pluginGalleryCandidates_.end());
+    pluginGalleryCandidates_.erase(std::unique(pluginGalleryCandidates_.begin(), pluginGalleryCandidates_.end()), pluginGalleryCandidates_.end());
+    logger_->info("[Core] Plugin gallery refreshed; candidates=" + std::to_string(pluginGalleryCandidates_.size()));
 }
 
 void EditorShell::unloadAllPlugins() {
+    logger_->info("[Core] User requested unloading all dynamically-loaded plugins.");
     EditorContext context = makeContext();
     pluginManager_.unloadAll(context);
     // Plugins can own every extension point in the registry. Destroy those
@@ -411,7 +425,20 @@ void EditorShell::unloadAllPlugins() {
     pluginManager_.releaseUnloadedLibraries();
     activePanelIndex_ = 0;
     selectedHierarchyItem_.clear();
+    restoreCoreViewportDefaults();
     registerCoreExtensions();
+    logger_->info("[Core] All plugins unloaded and Core extensions restored.");
+}
+
+void EditorShell::restoreCoreViewportDefaults() {
+    // A plugin may own a view mode and hide Core's grid/axes/toggle.  When no
+    // plugin is active, always restore the usable CAD viewport rather than
+    // leaving those plugin-specific settings behind.
+    registry_.viewportRenderSettings() = ViewportRenderSettings{};
+    registry_.viewportNavigationSettings().trackpadZoomGestureMode = TrackpadZoomGestureMode::TwoFingerScroll;
+    viewMode_ = ViewMode::Mode3D;
+    resetViewportCamera();
+    logger_->debug("[Core] Restored default 3D viewport navigation and render settings.");
 }
 
 void EditorShell::draw(ViewportRenderer& viewportRenderer, bool& shouldClose) {
@@ -491,11 +518,66 @@ void EditorShell::drawPluginMenuItems(std::string_view menuName) {
     }
 }
 
+void EditorShell::drawPluginGallery(std::string& requestedPluginPath) {
+    if (!ImGui::BeginPopupModal("Plugin Gallery##PluginGallery", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::TextUnformatted("Available Plugin DLLs");
+    ImGui::TextDisabled("Choose a plugin to load into the current editor session.");
+    ImGui::Separator();
+
+    if (pluginGalleryCandidates_.empty()) {
+        ImGui::TextWrapped("No plugin DLLs were found. Build one with: cmake --build build --target <plugin>");
+    } else {
+        ImGui::BeginChild("##PluginGalleryCards", ImVec2(680.0f, 300.0f), true);
+        if (ImGui::BeginTable("##PluginGalleryTable", 2, ImGuiTableFlags_SizingStretchSame)) {
+            for (const auto& candidate : pluginGalleryCandidates_) {
+                ImGui::TableNextColumn();
+                ImGui::PushID(candidate.string().c_str());
+                ImGui::BeginChild("##PluginCard", ImVec2(0.0f, 124.0f), true);
+
+                const std::string fileName = candidate.filename().string();
+                ImGui::TextUnformatted(fileName.c_str());
+                ImGui::Separator();
+                ImGui::TextDisabled("DLL / dylib module");
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                ImGui::TextDisabled("%s", candidate.parent_path().string().c_str());
+                ImGui::PopTextWrapPos();
+
+                const bool loaded = pluginManager_.isPluginLoaded(candidate);
+                if (loaded) {
+                    ImGui::TextColored(ImVec4(0.35f, 0.88f, 0.52f, 1.0f), "Loaded");
+                } else if (ImGui::Button("Load", ImVec2(-1.0f, 0.0f))) {
+                    requestedPluginPath = candidate.string();
+                    ImGui::CloseCurrentPopup();
+                }
+
+                ImGui::EndChild();
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Refresh")) {
+        refreshPluginGallery();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close")) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void EditorShell::drawMainMenu(bool& shouldClose) {
     if (!ImGui::BeginMainMenuBar()) {
         return;
     }
-    bool requestPluginRescan = false;
+    bool requestPluginGallery = false;
+    bool requestPluginGalleryRefresh = false;
     bool requestPluginUnloadAll = false;
     std::string requestedPluginPath;
 
@@ -555,11 +637,14 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
         ImGui::EndMenu();
     }
     if (menuVisibility.showPlugins && ImGui::BeginMenu("Plugins")) {
+        if (ImGui::MenuItem("Plugin Gallery...")) {
+            requestPluginGallery = true;
+        }
         if (ImGui::MenuItem("Load Plugin DLL...")) {
             ImGui::OpenPopup("##LoadPluginDllPopup");
         }
-        if (ImGui::MenuItem("Rescan Plugin Directories")) {
-            requestPluginRescan = true;
+        if (ImGui::MenuItem("Refresh Plugin Gallery")) {
+            requestPluginGalleryRefresh = true;
         }
         if (ImGui::MenuItem("Unload All Loaded Plugins", nullptr, false, !pluginManager_.loadedPlugins().empty())) {
             requestPluginUnloadAll = true;
@@ -687,6 +772,19 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
 
     ImGui::EndMainMenuBar();
 
+    if (openPluginGalleryOnStartup_) {
+        openPluginGalleryOnStartup_ = false;
+        requestPluginGallery = true;
+        logger_->info("[Core] Opening Plugin Gallery for the initial plugin selection.");
+    }
+    if (requestPluginGalleryRefresh) {
+        refreshPluginGallery();
+    }
+    if (requestPluginGallery) {
+        refreshPluginGallery();
+        ImGui::OpenPopup("Plugin Gallery##PluginGallery");
+    }
+
     if (ImGui::BeginPopup("##LoadPluginDllPopup")) {
         static char pluginPath[1024] = {};
         ImGui::TextUnformatted("Load a DLL/dylib/shared library");
@@ -701,13 +799,13 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
         ImGui::EndPopup();
     }
 
+    drawPluginGallery(requestedPluginPath);
+
     if (requestPluginUnloadAll) {
         unloadAllPlugins();
     } else if (!requestedPluginPath.empty()) {
         EditorContext context = makeContext();
         pluginManager_.loadPlugin(context, requestedPluginPath);
-    } else if (requestPluginRescan) {
-        loadPluginsFromKnownDirectories();
     }
 }
 

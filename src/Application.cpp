@@ -83,8 +83,12 @@ bool Application::initialize() {
         editorShell_ = std::make_unique<EditorShell>();
         editorShell_->initializeCoreRegistry();
         installTrackpadGestureCallbacks(window_, this, &Application::onTrackpadPinch, &Application::onTrackpadScroll);
+        editorShell_->logger().info("[Core] Application initialization completed; entering editor event loop.");
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "Initialization error: %s\n", ex.what());
+        if (editorShell_) {
+            editorShell_->logger().critical(std::string("[Core] Application initialization failed: ") + ex.what());
+        }
         return false;
     }
 
@@ -94,6 +98,7 @@ bool Application::initialize() {
 void Application::run() {
     using Clock = std::chrono::steady_clock;
 
+    if (editorShell_) editorShell_->logger().info("[Core] Editor event loop started.");
     bool shouldClose = false;
     while (!glfwWindowShouldClose(window_) && !shouldClose) {
         const auto frameStart = Clock::now();
@@ -144,9 +149,11 @@ void Application::run() {
             std::this_thread::yield();
         }
     }
+    if (editorShell_) editorShell_->logger().info("[Core] Editor event loop finished.");
 }
 
 void Application::shutdown() {
+    if (editorShell_) editorShell_->logger().info("[Core] Application shutdown requested.");
     removeTrackpadPinchCallback();
     viewportRenderer_.reset();
     editorShell_.reset();
