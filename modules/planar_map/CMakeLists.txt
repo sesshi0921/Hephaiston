@@ -1,0 +1,5 @@
+add_library(hephaiston_planar_map STATIC src/PlanarMapModule.cpp)
+target_compile_features(hephaiston_planar_map PUBLIC cxx_std_20)
+target_include_directories(hephaiston_planar_map PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+find_package(CURL REQUIRED)
+target_link_libraries(hephaiston_planar_map PUBLIC hephaiston_geospatial CURL::libcurl)

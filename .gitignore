@@ -1,10 +1,27 @@
 # Build artifacts
 build/
 cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+DartConfiguration.tcl
+Makefile
+cmake_install.cmake
 
 # Runtime layout/state
 hephaiston_imgui.ini
 hephaiston_layout.ini
+hephaiston_atlas_polys.ini
+# Legacy Geo Polygon settings are intentionally not migrated or committed.
+hephaiston_geo_polygon.ini
+.hephaiston_tile_cache/
+.hephaiston_earth_tile_cache/
+logs/
+
+# Build-time dependencies and runtime imagery are intentionally outside Git.
+/external/imgui/
+/external/stb/
+/assets/nasa_bluemarble_2048.png
 
 # macOS
 .DS_Store

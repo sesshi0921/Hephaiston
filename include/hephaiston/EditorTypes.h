@@ -2,6 +2,8 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -15,6 +17,11 @@ class EditorContext;
 enum class ViewMode {
     Mode2D,
     Mode3D,
+};
+
+enum class TrackpadZoomGestureMode {
+    TwoFingerScroll,
+    Pinch,
 };
 
 enum class SceneObjectKind {
@@ -81,7 +88,7 @@ struct EditorMenuVisibility {
     bool showFile = true;
     bool showEdit = true;
     bool showView = true;
-    bool showAddons = true;
+    bool showPlugins = true;
     bool showWindow = true;
     bool showHelp = true;
     bool showFpsControl = true;
@@ -90,6 +97,41 @@ struct EditorMenuVisibility {
 struct ViewportRenderSettings {
     bool showHorizontalGrid = true;
     bool showOriginAxes = true;
+    bool showScaleBar = true;
+    // Core's upper-left 2D/3D toggle. Plugins that own the view mode can
+    // disable this and expose their own mode controls instead.
+    bool showViewModeToggle = true;
+};
+
+struct ViewportNavigationSettings {
+    // UI values are calibrated so 1.00x equals the former 0.75x response.
+    // Always use the effective accessors when applying an input delta.
+    static constexpr float kResponseBaseline = 0.75f;
+    float zoomSensitivity = 1.0f;
+    float moveSensitivity = 1.0f;
+    TrackpadZoomGestureMode trackpadZoomGestureMode = TrackpadZoomGestureMode::TwoFingerScroll;
+
+    [[nodiscard]] float effectiveZoomSensitivity() const noexcept {
+        return zoomSensitivity * kResponseBaseline;
+    }
+    [[nodiscard]] float effectiveMoveSensitivity() const noexcept {
+        return moveSensitivity * kResponseBaseline;
+    }
+    // Orbiting needs less angular movement at close range. This keeps small
+    // objects controllable without making distant CAD views sluggish.
+    [[nodiscard]] float effectiveOrbitZoomSensitivity(float orbitDistanceMeters) const noexcept {
+        return effectiveZoomSensitivity() * orbitDistanceResponse(orbitDistanceMeters);
+    }
+    [[nodiscard]] float effectiveOrbitMoveSensitivity(float orbitDistanceMeters) const noexcept {
+        return effectiveMoveSensitivity() * orbitDistanceResponse(orbitDistanceMeters);
+    }
+
+private:
+    [[nodiscard]] static float orbitDistanceResponse(float orbitDistanceMeters) noexcept {
+        constexpr float referenceDistanceMeters = 42.0f;
+        const float ratio = std::max(0.001f, orbitDistanceMeters) / referenceDistanceMeters;
+        return std::clamp(std::sqrt(ratio), 0.025f, 1.50f);
+    }
 };
 
 // Lightweight command descriptor for simple add-ons. For richer commands with
@@ -157,6 +199,26 @@ struct ViewportPoint {
 struct ViewportTriangle {
     ImVec4 color {1.0f, 1.0f, 1.0f, 1.0f};
     float vertices[9] {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+struct ViewportTexturedVertex {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+};
+
+// Generic textured geometry extension point. Core owns OpenGL texture upload;
+// modules/plugins only supply CPU vertices, indices and an asset path.
+struct ViewportTexturedMesh {
+    std::string id;
+    std::string texturePath;
+    std::vector<ViewportTexturedVertex> vertices;
+    std::vector<unsigned int> indices;
+    // Useful for raster label overlays: light map backgrounds become
+    // transparent while dark place names and line work remain visible.
+    bool makeLightPixelsTransparent = false;
 };
 
 class IMainMenuPanel {
@@ -265,6 +327,8 @@ public:
     virtual const char* displayName() const = 0;
     virtual bool visible() const { return true; }
     virtual void collectViewportLines(std::vector<ViewportLine>& outLines) = 0;
+    virtual void collectViewportPoints(std::vector<ViewportPoint>&) {}
+    virtual void collectViewportTexturedMeshes(std::vector<ViewportTexturedMesh>&) {}
 };
 
 class IViewportTool {
@@ -275,6 +339,11 @@ public:
     virtual void onActivated(EditorContext&) {}
     virtual void onDeactivated(EditorContext&) {}
     virtual void drawToolbar(EditorContext&) {}
+    virtual bool handlesViewportNavigation(EditorContext&) const { return false; }
+    // Return true while a modal tool owns viewport input (for example polygon
+    // vertex capture). Core will not pan, zoom, orbit, select, or operate the
+    // default view gizmo during that period.
+    virtual bool blocksDefaultViewportNavigation(EditorContext&) const { return false; }
     virtual void onViewportInput(EditorContext&) {}
 };
 

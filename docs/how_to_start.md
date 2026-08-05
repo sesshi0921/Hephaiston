@@ -8,30 +8,55 @@ Hephaiston Core UI をローカルでビルドして起動するための最小�
 - C++20 対応コンパイラ
 - GLFW 3
 - OpenGL
-- Dear ImGui Docking Branch
+- spdlog（`external/cpp-logger` の依存）
 
 macOS + Homebrew の場合、GLFW は以下で導入できます。
 
 ```bash
-brew install glfw
+brew install glfw spdlog
 ```
 
-## 2. Dear ImGui Docking Branch の取得
+## 2. 外部依存・地表テクスチャの取得
 
-`external/imgui` が存在しない場合は、以下を実行してください。
+Dear ImGui Docking Branch と stb_image は、CMake configure 時に固定リビジョンを
+`build/_deps/` へ取得します。Earthビューの低ズーム背景に使う
+NASA Blue Marbleも、`build/assets/nasa_bluemarble_2048.png` へ取得します。
+いずれもソースリポジトリには保存されません。
+
+ネットワークに接続できない場合は、ImGuiのローカルチェックアウトとEarth画像を
+明示指定できます。
 
 ```bash
-git clone --depth 1 --branch docking https://github.com/ocornut/imgui.git external/imgui
+cmake -S . -B build \
+  -DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_IMGUI=/absolute/path/to/imgui \
+  -DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_STB=/absolute/path/to/stb \
+  -DHEPHAISTON_EARTH_TEXTURE_PATH=/absolute/path/to/bluemarble-2048.png
 ```
+
+Earth画像が見つからない場合でもアプリは起動し、Earthビューはグリッドへフォールバックします。
 
 ## 3. ビルド
 
 リポジトリルートで以下を実行します。
 
+初回clone時にサブモジュールも取得していない場合は、先に以下を実行してください。
+
+```bash
+git submodule update --init --recursive
+```
+
 ```bash
 cmake -S . -B build
 cmake --build build -j 8
 ```
+
+Coreとプラグインは別ビルド単位です。Atlas Polysをビルドする場合だけ、次を実行してください。
+
+```bash
+cmake --build build --target atlas_polys -j 8
+```
+
+Coreと組み込みプラグインを常に一括ビルドする場合は、構成時に `-DHEPHAISTON_BUILD_BUNDLED_PLUGINS=ON` を指定します。
 
 ## 4. 起動
 
@@ -39,12 +64,24 @@ cmake --build build -j 8
 ./build/hephaiston
 ```
 
+## Atlas Polys を使う
+
+`cmake --build build --target atlas_polys` を実行すると、`Atlas Polys` DLL/dylibが `build/plugins/` に出力されます。起動時はDLLを一切自動ロードせず、最初に表示されるPlugin Galleryのカードから `Load` で明示的にロードしてください。閉じた後は `Plugins > Plugin Gallery...` から再表示できます。
+
+1. 左パネルで `Atlas Polys` を選択します。
+2. `Earth` または `Planar Map` を選択します。
+3. `Start Polygon Mode` を押し、ビュー上を左クリックして頂点を追加します。
+4. Enterまたは右クリックで確定します。Escはキャンセル、Backspace/Ctrl+Zは直前頂点削除です。
+5. Exportセクションでフォルダを選び、KMLまたはCSVを出力します。
+
+ネットワーク不要でもアプリは起動し、地球儀・平面地図ともにグリッドのフォールバックを表示します。
+
 起動すると、グリッドのみの FBO ビューポート、空の左右パネル、上部メニューを持つ Hephaiston Core UI が表示されます。
 
 ## 5. 基本操作
 
-- 左パネル: Core 単体では空です。将来アドオン登録時に操作 UI を表示します。
-- 右パネル: Core 単体では空です。将来アドオン/設計データ登録時にヒエラルキーを表示します。
+- 左パネル: Core 単体では空です。将来プラグイン登録時に操作 UI を表示します。
+- 右パネル: Core 単体では空です。将来プラグイン/設計データ登録時にヒエラルキーを表示します。
 - 上部メニュー: フローティングウィンドウの表示
 - メニューバー右端の `FPS: XXX`: 独立したクリック領域。クリックで max FPS を数値入力（0以下は Unlimited、デフォルト 60）
 - 左下の小型スケールバー: 0.2m〜10,000,000m範囲で表示。ホバーで詳細表示、クリックで固定、`×` で閉じる
@@ -52,7 +89,7 @@ cmake --build build -j 8
 - 右下ギズモ: 方位/軸表示
 - 2D ギズモ: 上が N、右が E
 - 3D ギズモ: E/N/Z 軸表示。ギズモをドラッグして orbit 回転
-- OSウィンドウタイトル: Core 単体では `Hephaiston`、アドオン有効時は `Hephaiston - {アドオン名}`
+- OSウィンドウタイトル: Core 単体では `Hephaiston`、プラグイン有効時は `Hephaiston - {プラグイン名}`
 - FBO ビュー: クリック、ドラッグ、ホイール入力の取得
 - 3D ビュー: 左ドラッグで orbit 回転、右/中ドラッグでパン、ホイールでドリー
 - 2D ビュー: ドラッグでパン、ホイールでカーソル位置中心ズーム
@@ -62,7 +99,7 @@ cmake --build build -j 8
 
 プラグイン/DLL化前段として、`EditorRegistry` から以下を登録・制御できます。
 
-- `menuVisibility()` で File / Edit / View / Addons / Window / Help / FPS 表示のON/OFF
+- `menuVisibility()` で File / Edit / View / Plugins / Window / Help / FPS 表示のON/OFF
 - `viewportRenderSettings()` で FBO の水平グリッド、原点XYZ軸のON/OFF
 - `registerMenuItem()` でメニューバー項目を追加
 - `registerMainMenuPanel()` で `IMainMenuPanel` 継承UIを左メインパネルへ追加
@@ -81,6 +118,31 @@ Core API は `include/` 直下にも forwarding header を用意しています�
 #include "ViewportSceneLayer.h"
 #include "PluginAPI.h"
 ```
+
+`ViewportRenderSettings::showViewModeToggle = false;` にすると、Core標準のFBO左上2D/3D切替ボタンを隠せます。Plugin独自のビュー切替UIを提供する場合に使用してください。
+
+`ViewportNavigationSettings` は、表示上の `1.00x` を従来の `0.75x` 相当として校正しています。入力処理側では `effectiveZoomSensitivity()` / `effectiveMoveSensitivity()` を使用してください。3D orbitには距離適応版の `effectiveOrbitZoomSensitivity()` / `effectiveOrbitMoveSensitivity()` もあります。
+
+`ViewportNavigationSettings::trackpadZoomGestureMode` で、既定の `TrackpadZoomGestureMode::TwoFingerScroll` と `TrackpadZoomGestureMode::Pinch` を切り替えられます。macOSのPinch入力はCoreのネイティブイベントブリッジが供給します。
+
+### 6.2 ログAPI
+
+Coreは `external/cpp-logger` サブモジュールの単一インスタンスを所有します。プラグインは追加リンク不要で、`EditorContext` からログを出力できます。
+
+```cpp
+#include "PluginAPI.h"
+
+context.logger().debug("[MyPlugin] detailed diagnostic");
+context.logger().info("[MyPlugin] operation completed");
+context.logger().warning("[MyPlugin] retrying optional request");
+context.logger().error("[MyPlugin] operation failed");
+```
+
+開発ビルドでの出力先は `build/logs/cpp_logger.log` です。Coreはプラグインの探索・DLLロード/アンロード・API不整合を、Atlas Polysはビュー遷移とポリゴン編集の受理/拒否を記録します。
+
+### 6.3 DLLの動的ロード
+
+`Plugins > Plugin Gallery...` は `plugins/` と `build/plugins/` を副作用なく探索し、検出したDLL/dylib/shared libraryをカード形式で表示します。カードの `Load` で実行中にロードできます。任意パスは `Load Plugin DLL...` から直接指定できます。`Unload All Loaded Plugins` は登録済みのプラグイン拡張を先に破棄してからDLLを閉じ、Core UIを再構築します。
 
 プラグインターゲットでは、推奨として `hephaiston_plugin_api` をリンクしてください。
 

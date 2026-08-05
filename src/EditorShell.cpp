@@ -91,9 +91,9 @@ public:
             static int units = 0;
             ImGui::Combo("Length Unit", &units, "meters\0millimeters\0feet\0");
             ImGui::InputText("Project CRS", crs_, sizeof(crs_));
-        } else if (title_ == "Addon Manager") {
-            ImGui::TextDisabled("No addons loaded.");
-            ImGui::TextWrapped("DLL loading and add-on discovery are intentionally deferred to a later milestone.");
+        } else if (title_ == "Plugin Manager") {
+            ImGui::TextDisabled("DLL/dylib plugins are discovered from plugins/ and build/plugins/.");
+            ImGui::TextWrapped("Use the Plugins menu to select a registered plugin panel.");
         } else if (title_ == "Console") {
             ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "[Info] Hephaiston Core shell started.");
             ImGui::TextColored(ImVec4(0.45f, 0.65f, 1.0f, 1.0f), "[Viewport] FBO renderer active.");
@@ -256,6 +256,7 @@ public:
 
 class ViewGizmoOverlay final : public IViewportOverlay {
 public:
+    explicit ViewGizmoOverlay(EditorRegistry& registry) : registry_(registry) {}
     const char* id() const override { return "overlay.view_gizmo"; }
 
     void draw(const ViewportVisibleRect& rect, ViewportStatus& status, ViewMode& mode) override {
@@ -276,8 +277,11 @@ public:
         const bool canvasActive = ImGui::IsItemActive();
         if (mode == ViewMode::Mode3D && canvasActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             const ImVec2 delta = ImGui::GetIO().MouseDelta;
-            status.orbitYawDegrees += delta.x * 0.35f;
-            status.orbitPitchDegrees = std::clamp(status.orbitPitchDegrees - delta.y * 0.28f, -82.0f, 82.0f);
+            // Keep the globe/CAD drag behaviour consistent with 2D map pan:
+            // dragging content right/up moves the view west/south.
+            const float sensitivity = registry_.viewportNavigationSettings().effectiveOrbitMoveSensitivity(status.orbitDistanceMeters);
+            status.orbitYawDegrees -= delta.x * 0.35f * sensitivity;
+            status.orbitPitchDegrees = std::clamp(status.orbitPitchDegrees + delta.y * 0.28f * sensitivity, -82.0f, 82.0f);
         }
 
         ImDrawList* drawList = ImGui::GetWindowDrawList();
@@ -325,14 +329,21 @@ public:
 
         ImGui::End();
     }
+
+private:
+    EditorRegistry& registry_;
 };
 } // namespace
 
-EditorShell::EditorShell() {
+EditorShell::EditorShell()
+    : logger_(createEditorLogger()) {
+    logger_->info("[Core] EditorShell construction started.");
     loadLayoutSettings();
+    logger_->debug("[Core] Editor layout settings loaded.");
 }
 
 EditorShell::~EditorShell() {
+    logger_->info("[Core] EditorShell shutdown started; unloading plugins.");
     EditorContext context = makeContext();
     pluginManager_.unloadAll(context);
     // Important for DLL plugins: objects allocated by plugin modules must be
@@ -340,10 +351,19 @@ EditorShell::~EditorShell() {
     // keeps libraries open until its own destructor, so clearing the registry
     // here safely releases plugin-created panels/windows/layers first.
     registry_.clear();
+    logger_->info("[Core] EditorShell shutdown completed.");
+}
+
+void EditorShell::addTrackpadPinchDelta(float magnification) {
+    pendingTrackpadPinchDelta_ += magnification;
+}
+
+void EditorShell::addTrackpadScrollDelta(float deltaY) {
+    pendingTrackpadScrollDelta_ += deltaY;
 }
 
 EditorContext EditorShell::makeContext() {
-    return EditorContext(registry_, layoutState_, viewportStatus_, viewportInput_, visibleRect_, viewMode_, selectionManager_, sceneRegistry_);
+    return EditorContext(registry_, layoutState_, viewportStatus_, viewportInput_, visibleRect_, viewMode_, selectionManager_, sceneRegistry_, *logger_);
 }
 
 std::string EditorShell::windowTitle() const {
@@ -354,9 +374,17 @@ std::string EditorShell::windowTitle() const {
 }
 
 void EditorShell::initializeCoreRegistry() {
+    logger_->info("[Core] Initializing Core editor extensions. No plugins are loaded automatically.");
+    restoreCoreViewportDefaults();
+    registerCoreExtensions();
+    refreshPluginGallery();
+}
+
+void EditorShell::registerCoreExtensions() {
+    logger_->debug("[Core] Registering built-in editor extensions.");
     for (const auto& [id, title] : std::array<std::pair<const char*, const char*>, 8> {{
              {"window.project_settings", "Project Settings"},
-             {"window.addon_manager", "Addon Manager"},
+             {"window.plugin_manager", "Plugin Manager"},
              {"window.layer_manager", "Layer Manager"},
              {"window.coordinate_inspector", "Coordinate Inspector"},
              {"window.rendering_settings", "Rendering Settings"},
@@ -369,14 +397,48 @@ void EditorShell::initializeCoreRegistry() {
 
     registry_.registerOverlay(std::make_unique<ViewModeToggleOverlay>());
     registry_.registerOverlay(std::make_unique<ViewportStatusOverlay>());
-    registry_.registerOverlay(std::make_unique<ViewGizmoOverlay>());
+    registry_.registerOverlay(std::make_unique<ViewGizmoOverlay>(registry_));
 
     registry_.registerCommand({"command.focus_view", "Focus in View", [] {}});
     registry_.registerCommand({"command.generate_volume", "Generate Volume", [] {}});
 
+}
+
+void EditorShell::refreshPluginGallery() {
+    const auto sourceDirectory = std::filesystem::current_path() / "plugins";
+    const auto buildDirectory = std::filesystem::current_path() / "build" / "plugins";
+    pluginGalleryCandidates_ = pluginManager_.discoverPlugins(sourceDirectory);
+    auto builtPlugins = pluginManager_.discoverPlugins(buildDirectory);
+    pluginGalleryCandidates_.insert(pluginGalleryCandidates_.end(), builtPlugins.begin(), builtPlugins.end());
+    std::sort(pluginGalleryCandidates_.begin(), pluginGalleryCandidates_.end());
+    pluginGalleryCandidates_.erase(std::unique(pluginGalleryCandidates_.begin(), pluginGalleryCandidates_.end()), pluginGalleryCandidates_.end());
+    logger_->info("[Core] Plugin gallery refreshed; candidates=" + std::to_string(pluginGalleryCandidates_.size()));
+}
+
+void EditorShell::unloadAllPlugins() {
+    logger_->info("[Core] User requested unloading all dynamically-loaded plugins.");
     EditorContext context = makeContext();
-    pluginManager_.loadAllFromDirectory(context, std::filesystem::current_path() / "plugins");
-    pluginManager_.loadAllFromDirectory(context, std::filesystem::current_path() / "build" / "plugins");
+    pluginManager_.unloadAll(context);
+    // Plugins can own every extension point in the registry. Destroy those
+    // objects while their libraries are still open, then recreate Core UI.
+    registry_.clear();
+    pluginManager_.releaseUnloadedLibraries();
+    activePanelIndex_ = 0;
+    selectedHierarchyItem_.clear();
+    restoreCoreViewportDefaults();
+    registerCoreExtensions();
+    logger_->info("[Core] All plugins unloaded and Core extensions restored.");
+}
+
+void EditorShell::restoreCoreViewportDefaults() {
+    // A plugin may own a view mode and hide Core's grid/axes/toggle.  When no
+    // plugin is active, always restore the usable CAD viewport rather than
+    // leaving those plugin-specific settings behind.
+    registry_.viewportRenderSettings() = ViewportRenderSettings{};
+    registry_.viewportNavigationSettings().trackpadZoomGestureMode = TrackpadZoomGestureMode::TwoFingerScroll;
+    viewMode_ = ViewMode::Mode3D;
+    resetViewportCamera();
+    logger_->debug("[Core] Restored default 3D viewport navigation and render settings.");
 }
 
 void EditorShell::draw(ViewportRenderer& viewportRenderer, bool& shouldClose) {
@@ -416,10 +478,15 @@ void EditorShell::loadLayoutSettings() {
         else if (key == "rightPanelWidth") in >> layoutState_.rightPanelWidth;
         else if (key == "showStatusBar") in >> layoutState_.showStatusBar;
         else if (key == "maxFps") in >> maxFps_;
+        else if (key == "zoomSensitivity") in >> registry_.viewportNavigationSettings().zoomSensitivity;
+        else if (key == "moveSensitivity") in >> registry_.viewportNavigationSettings().moveSensitivity;
+        else if (key == "trackpadZoomGestureMode") { int mode = 0; in >> mode; registry_.viewportNavigationSettings().trackpadZoomGestureMode = mode == 1 ? TrackpadZoomGestureMode::Pinch : TrackpadZoomGestureMode::TwoFingerScroll; }
     }
     if (maxFps_ <= 0) {
         maxFps_ = 0;
     }
+    registry_.viewportNavigationSettings().zoomSensitivity = std::clamp(registry_.viewportNavigationSettings().zoomSensitivity, 0.1f, 4.0f);
+    registry_.viewportNavigationSettings().moveSensitivity = std::clamp(registry_.viewportNavigationSettings().moveSensitivity, 0.1f, 4.0f);
     layoutState_.leftPanelWidth = std::clamp(layoutState_.leftPanelWidth, kMinPanelWidth, kMaxPanelWidth);
     layoutState_.rightPanelWidth = std::clamp(layoutState_.rightPanelWidth, kMinPanelWidth, kMaxPanelWidth);
 }
@@ -435,6 +502,9 @@ void EditorShell::saveLayoutSettings() const {
     out << "rightPanelWidth " << layoutState_.rightPanelWidth << '\n';
     out << "showStatusBar " << layoutState_.showStatusBar << '\n';
     out << "maxFps " << maxFps_ << '\n';
+    out << "zoomSensitivity " << registry_.viewportNavigationSettings().zoomSensitivity << '\n';
+    out << "moveSensitivity " << registry_.viewportNavigationSettings().moveSensitivity << '\n';
+    out << "trackpadZoomGestureMode " << (registry_.viewportNavigationSettings().trackpadZoomGestureMode == TrackpadZoomGestureMode::Pinch ? 1 : 0) << '\n';
 }
 
 void EditorShell::drawPluginMenuItems(std::string_view menuName) {
@@ -448,10 +518,68 @@ void EditorShell::drawPluginMenuItems(std::string_view menuName) {
     }
 }
 
+void EditorShell::drawPluginGallery(std::string& requestedPluginPath) {
+    if (!ImGui::BeginPopupModal("Plugin Gallery##PluginGallery", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::TextUnformatted("Available Plugin DLLs");
+    ImGui::TextDisabled("Choose a plugin to load into the current editor session.");
+    ImGui::Separator();
+
+    if (pluginGalleryCandidates_.empty()) {
+        ImGui::TextWrapped("No plugin DLLs were found. Build one with: cmake --build build --target <plugin>");
+    } else {
+        ImGui::BeginChild("##PluginGalleryCards", ImVec2(680.0f, 300.0f), true);
+        if (ImGui::BeginTable("##PluginGalleryTable", 2, ImGuiTableFlags_SizingStretchSame)) {
+            for (const auto& candidate : pluginGalleryCandidates_) {
+                ImGui::TableNextColumn();
+                ImGui::PushID(candidate.string().c_str());
+                ImGui::BeginChild("##PluginCard", ImVec2(0.0f, 124.0f), true);
+
+                const std::string fileName = candidate.filename().string();
+                ImGui::TextUnformatted(fileName.c_str());
+                ImGui::Separator();
+                ImGui::TextDisabled("DLL / dylib module");
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+                ImGui::TextDisabled("%s", candidate.parent_path().string().c_str());
+                ImGui::PopTextWrapPos();
+
+                const bool loaded = pluginManager_.isPluginLoaded(candidate);
+                if (loaded) {
+                    ImGui::TextColored(ImVec4(0.35f, 0.88f, 0.52f, 1.0f), "Loaded");
+                } else if (ImGui::Button("Load", ImVec2(-1.0f, 0.0f))) {
+                    requestedPluginPath = candidate.string();
+                    ImGui::CloseCurrentPopup();
+                }
+
+                ImGui::EndChild();
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button("Refresh")) {
+        refreshPluginGallery();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close")) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void EditorShell::drawMainMenu(bool& shouldClose) {
     if (!ImGui::BeginMainMenuBar()) {
         return;
     }
+    bool requestPluginGallery = false;
+    bool requestPluginGalleryRefresh = false;
+    bool requestPluginUnloadAll = false;
+    std::string requestedPluginPath;
 
     const EditorMenuVisibility& menuVisibility = registry_.menuVisibility();
     if (menuVisibility.showFile && ImGui::BeginMenu("File")) {
@@ -478,6 +606,29 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
         if (ImGui::MenuItem("Origin XYZ Axes", nullptr, registry_.viewportRenderSettings().showOriginAxes)) {
             registry_.viewportRenderSettings().showOriginAxes = !registry_.viewportRenderSettings().showOriginAxes;
         }
+        if (ImGui::BeginMenu("Sensitivity")) {
+            auto& navigation = registry_.viewportNavigationSettings();
+            ImGui::SetNextItemWidth(150.0f);
+            if (ImGui::SliderFloat("Zoom", &navigation.zoomSensitivity, 0.1f, 4.0f, "%.2fx")) saveLayoutSettings();
+            ImGui::SetNextItemWidth(150.0f);
+            if (ImGui::SliderFloat("Move", &navigation.moveSensitivity, 0.1f, 4.0f, "%.2fx")) saveLayoutSettings();
+            if (ImGui::MenuItem("Reset")) { navigation = {}; saveLayoutSettings(); }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Trackpad Zoom")) {
+            auto& navigation = registry_.viewportNavigationSettings();
+            if (ImGui::MenuItem("Two-finger Vertical Scroll", nullptr, navigation.trackpadZoomGestureMode == TrackpadZoomGestureMode::TwoFingerScroll)) {
+                navigation.trackpadZoomGestureMode = TrackpadZoomGestureMode::TwoFingerScroll;
+                saveLayoutSettings();
+            }
+            if (ImGui::MenuItem("Pinch In / Out", nullptr, navigation.trackpadZoomGestureMode == TrackpadZoomGestureMode::Pinch)) {
+                navigation.trackpadZoomGestureMode = TrackpadZoomGestureMode::Pinch;
+                saveLayoutSettings();
+            }
+            ImGui::Separator();
+            ImGui::TextDisabled("Pinch requires native trackpad support.");
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("Status Bar", nullptr, layoutState_.showStatusBar)) {
             layoutState_.showStatusBar = !layoutState_.showStatusBar;
             saveLayoutSettings();
@@ -485,7 +636,32 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
         drawPluginMenuItems("View");
         ImGui::EndMenu();
     }
-    if (menuVisibility.showAddons && ImGui::BeginMenu("Addons")) {
+    if (menuVisibility.showPlugins && ImGui::BeginMenu("Plugins")) {
+        if (ImGui::MenuItem("Plugin Gallery...")) {
+            requestPluginGallery = true;
+        }
+        if (ImGui::MenuItem("Load Plugin DLL...")) {
+            ImGui::OpenPopup("##LoadPluginDllPopup");
+        }
+        if (ImGui::MenuItem("Refresh Plugin Gallery")) {
+            requestPluginGalleryRefresh = true;
+        }
+        if (ImGui::MenuItem("Unload All Loaded Plugins", nullptr, false, !pluginManager_.loadedPlugins().empty())) {
+            requestPluginUnloadAll = true;
+        }
+        if (!pluginManager_.loadedPlugins().empty()) {
+            ImGui::Separator();
+            ImGui::TextDisabled("Loaded DLL plugins");
+            for (const auto& plugin : pluginManager_.loadedPlugins()) {
+                ImGui::BulletText("%s %s", plugin.displayName, plugin.version);
+            }
+            ImGui::Separator();
+        }
+        if (!pluginManager_.loadErrors().empty()) {
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.35f, 1.0f), "Last DLL load error:");
+            ImGui::TextWrapped("%s", pluginManager_.loadErrors().back().c_str());
+            ImGui::Separator();
+        }
         if (!registry_.mainMenuPanels().empty()) {
             for (int i = 0; i < static_cast<int>(registry_.mainMenuPanels().size()); ++i) {
                 if (ImGui::MenuItem(registry_.mainMenuPanels()[i].displayName.c_str(), nullptr, i == activePanelIndex_)) {
@@ -494,7 +670,7 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
             }
             ImGui::Separator();
         }
-        drawPluginMenuItems("Addons");
+        drawPluginMenuItems("Plugins");
         ImGui::EndMenu();
     }
     if (menuVisibility.showWindow && ImGui::BeginMenu("Window")) {
@@ -524,7 +700,7 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
     std::set<std::string> customMenus;
     for (const auto& item : registry_.menuItems()) {
         if (item.menuName != "File" && item.menuName != "Edit" && item.menuName != "View" &&
-            item.menuName != "Addons" && item.menuName != "Window" && item.menuName != "Help") {
+            item.menuName != "Plugins" && item.menuName != "Window" && item.menuName != "Help") {
             customMenus.insert(item.menuName);
         }
     }
@@ -595,6 +771,42 @@ void EditorShell::drawMainMenu(bool& shouldClose) {
     }
 
     ImGui::EndMainMenuBar();
+
+    if (openPluginGalleryOnStartup_) {
+        openPluginGalleryOnStartup_ = false;
+        requestPluginGallery = true;
+        logger_->info("[Core] Opening Plugin Gallery for the initial plugin selection.");
+    }
+    if (requestPluginGalleryRefresh) {
+        refreshPluginGallery();
+    }
+    if (requestPluginGallery) {
+        refreshPluginGallery();
+        ImGui::OpenPopup("Plugin Gallery##PluginGallery");
+    }
+
+    if (ImGui::BeginPopup("##LoadPluginDllPopup")) {
+        static char pluginPath[1024] = {};
+        ImGui::TextUnformatted("Load a DLL/dylib/shared library");
+        ImGui::SetNextItemWidth(440.0f);
+        ImGui::InputText("Path", pluginPath, sizeof(pluginPath));
+        if (ImGui::Button("Load") && pluginPath[0] != '\0') {
+            requestedPluginPath = pluginPath;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    drawPluginGallery(requestedPluginPath);
+
+    if (requestPluginUnloadAll) {
+        unloadAllPlugins();
+    } else if (!requestedPluginPath.empty()) {
+        EditorContext context = makeContext();
+        pluginManager_.loadPlugin(context, requestedPluginPath);
+    }
 }
 
 
@@ -638,7 +850,7 @@ void EditorShell::drawLeftPanel() {
             saveLayoutSettings();
         }
         if (!registry_.mainMenuPanels().empty()) {
-            ImGui::SeparatorText("Addons");
+            ImGui::SeparatorText("Plugins");
             activePanelIndex_ = std::clamp(activePanelIndex_, 0, static_cast<int>(registry_.mainMenuPanels().size()) - 1);
             const char* current = registry_.mainMenuPanels()[activePanelIndex_].displayName.c_str();
             if (ImGui::BeginCombo("Active", current)) {
@@ -812,6 +1024,18 @@ void EditorShell::drawFloatingWindows() {
 
 void EditorShell::drawOverlays() {
     for (auto& overlay : registry_.overlays()) {
+        EditorContext context = makeContext();
+        if (std::string_view(overlay->id()) == "overlay.viewport_status" && !registry_.viewportRenderSettings().showScaleBar) {
+            continue;
+        }
+        if (std::string_view(overlay->id()) == "overlay.view_mode_toggle" && !registry_.viewportRenderSettings().showViewModeToggle) {
+            continue;
+        }
+        if (IViewportTool* activeTool = registry_.activeViewportTool();
+            activeTool && activeTool->blocksDefaultViewportNavigation(context) &&
+            (std::string_view(overlay->id()) == "overlay.view_gizmo" || std::string_view(overlay->id()) == "overlay.view_mode_toggle")) {
+            continue;
+        }
         overlay->draw(visibleRect_, viewportStatus_, viewMode_);
     }
     if (IViewportTool* activeTool = registry_.activeViewportTool()) {
@@ -933,15 +1157,30 @@ void EditorShell::updateViewportInput() {
     const ImVec2 viewModeMax(viewModeMin.x + kViewModeToggleOverlaySize.x, viewModeMin.y + kViewModeToggleOverlaySize.y);
     const bool mouseOverGizmo = ImGui::IsMouseHoveringRect(gizmoMin, gizmoMax, false);
     const bool mouseOverScale = ImGui::IsMouseHoveringRect(scaleMin, scaleMax, false);
-    const bool mouseOverViewMode = ImGui::IsMouseHoveringRect(viewModeMin, viewModeMax, false);
+    const bool mouseOverViewMode = registry_.viewportRenderSettings().showViewModeToggle &&
+        ImGui::IsMouseHoveringRect(viewModeMin, viewModeMax, false);
     viewportInput_.hovered = ImGui::IsMouseHoveringRect(visibleRect_.min, visibleRect_.max, false) && !mouseOverGizmo && !mouseOverScale && !mouseOverViewMode && (!io.WantCaptureMouse || viewportDragActive_);
     viewportInput_.clicked = viewportInput_.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-    viewportInput_.wheel = viewportInput_.hovered ? io.MouseWheel : 0.0f;
+    constexpr float kPinchMagnificationToZoomDelta = 6.0f;
+    const bool usePinch = registry_.viewportNavigationSettings().trackpadZoomGestureMode == TrackpadZoomGestureMode::Pinch;
+    const bool hasTrackpadScroll = std::abs(pendingTrackpadScrollDelta_) > 0.0001f;
+    viewportInput_.wheel = viewportInput_.hovered
+        // Pinch mode suppresses only macOS's precise trackpad scroll events;
+        // a conventional mouse wheel remains available in both modes.
+        ? (usePinch && hasTrackpadScroll ? pendingTrackpadPinchDelta_ * kPinchMagnificationToZoomDelta
+                                         : (usePinch && pendingTrackpadPinchDelta_ != 0.0f ? pendingTrackpadPinchDelta_ * kPinchMagnificationToZoomDelta : io.MouseWheel))
+        : 0.0f;
+    pendingTrackpadPinchDelta_ = 0.0f;
+    pendingTrackpadScrollDelta_ = 0.0f;
     viewportInput_.dragging = false;
     viewportInput_.panning = false;
     viewportInput_.rotating = false;
 
-    if (!viewportDragActive_ && viewportInput_.hovered) {
+    EditorContext inputContext = makeContext();
+    const bool navigationBlocked = registry_.activeViewportTool() && registry_.activeViewportTool()->blocksDefaultViewportNavigation(inputContext);
+    const bool navigationHandledByTool = registry_.activeViewportTool() && registry_.activeViewportTool()->handlesViewportNavigation(inputContext);
+
+    if (!navigationBlocked && !navigationHandledByTool && !viewportDragActive_ && viewportInput_.hovered) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             viewportDragActive_ = true;
             viewportDragButton_ = ImGuiMouseButton_Right;
@@ -957,13 +1196,17 @@ void EditorShell::updateViewportInput() {
         }
     }
 
-    const bool activeButtonDown = viewportDragActive_ && ImGui::IsMouseDown(viewportDragButton_);
+    const bool activeButtonDown = !navigationBlocked && !navigationHandledByTool && viewportDragActive_ && ImGui::IsMouseDown(viewportDragButton_);
     if (viewportDragActive_ && !activeButtonDown) {
         viewportDragActive_ = false;
         viewportInput_.dragDelta = ImVec2(0.0f, 0.0f);
     }
 
     if (activeButtonDown) {
+        const auto& navigation = registry_.viewportNavigationSettings();
+        const float moveSensitivity = viewMode_ == ViewMode::Mode3D
+            ? navigation.effectiveOrbitMoveSensitivity(viewportStatus_.orbitDistanceMeters)
+            : navigation.effectiveMoveSensitivity();
         const ImVec2 delta(io.MousePos.x - previousViewportMousePos_.x, io.MousePos.y - previousViewportMousePos_.y);
         previousViewportMousePos_ = io.MousePos;
         viewportInput_.dragging = std::abs(delta.x) > 0.0f || std::abs(delta.y) > 0.0f;
@@ -971,18 +1214,18 @@ void EditorShell::updateViewportInput() {
 
         if (viewMode_ == ViewMode::Mode3D && viewportDragButton_ == ImGuiMouseButton_Left && !io.KeyShift) {
             viewportInput_.rotating = true;
-            viewportStatus_.orbitYawDegrees += delta.x * 0.28f;
-            viewportStatus_.orbitPitchDegrees = std::clamp(viewportStatus_.orbitPitchDegrees - delta.y * 0.22f, -82.0f, 82.0f);
+            viewportStatus_.orbitYawDegrees -= delta.x * 0.28f * moveSensitivity;
+            viewportStatus_.orbitPitchDegrees = std::clamp(viewportStatus_.orbitPitchDegrees + delta.y * 0.22f * moveSensitivity, -82.0f, 82.0f);
         } else {
             viewportInput_.panning = true;
             if (viewMode_ == ViewMode::Mode2D) {
                 const float mpp = static_cast<float>(viewportStatus_.metersPerPixel);
-                viewportStatus_.panMeters.x -= delta.x * mpp;
-                viewportStatus_.panMeters.y += delta.y * mpp;
+                viewportStatus_.panMeters.x -= delta.x * mpp * moveSensitivity;
+                viewportStatus_.panMeters.y += delta.y * mpp * moveSensitivity;
             } else {
                 const float yaw = viewportStatus_.orbitYawDegrees * 3.14159265358979323846f / 180.0f;
                 const float pitch = viewportStatus_.orbitPitchDegrees * 3.14159265358979323846f / 180.0f;
-                const float scale = std::max(0.02f, viewportStatus_.orbitDistanceMeters * 0.0018f);
+                const float scale = std::max(0.02f, viewportStatus_.orbitDistanceMeters * 0.0018f) * moveSensitivity;
                 const float rightX = -std::sin(yaw);
                 const float rightY = std::cos(yaw);
                 const float upX = -std::cos(yaw) * std::sin(pitch);
@@ -1002,26 +1245,29 @@ void EditorShell::updateViewportInput() {
     const ImVec2 cursorOffset(io.MousePos.x - visibleRect_.min.x - width * 0.5f,
                               height * 0.5f - (io.MousePos.y - visibleRect_.min.y));
 
-    if (viewportInput_.hovered && std::abs(viewportInput_.wheel) > 0.0f) {
+    if (!navigationBlocked && !navigationHandledByTool && viewportInput_.hovered && std::abs(viewportInput_.wheel) > 0.0f) {
         if (viewMode_ == ViewMode::Mode2D) {
             const float beforeMpp = static_cast<float>(viewportStatus_.metersPerPixel);
             const ImVec2 worldUnderCursor(viewportStatus_.panMeters.x + cursorOffset.x * beforeMpp,
                                           viewportStatus_.panMeters.y + cursorOffset.y * beforeMpp);
-            const double factor = std::pow(1.12, static_cast<double>(viewportInput_.wheel));
+            const double factor = std::pow(1.12, static_cast<double>(viewportInput_.wheel) * registry_.viewportNavigationSettings().effectiveZoomSensitivity());
             viewportStatus_.zoom = std::clamp(viewportStatus_.zoom * factor, 0.000001, 4096.0);
             viewportStatus_.metersPerPixel = 1.0 / viewportStatus_.zoom;
             const float afterMpp = static_cast<float>(viewportStatus_.metersPerPixel);
             viewportStatus_.panMeters.x = worldUnderCursor.x - cursorOffset.x * afterMpp;
             viewportStatus_.panMeters.y = worldUnderCursor.y - cursorOffset.y * afterMpp;
         } else {
-            const double factor = std::pow(0.78, static_cast<double>(viewportInput_.wheel));
+            // Match the 2D zoom response: 3D distance is the reciprocal of
+            // 2D magnification, so both use the same sensitivity curve.
+            const double factor = std::pow(1.0 / 1.12, static_cast<double>(viewportInput_.wheel) *
+                registry_.viewportNavigationSettings().effectiveOrbitZoomSensitivity(viewportStatus_.orbitDistanceMeters));
             viewportStatus_.orbitDistanceMeters = std::clamp(static_cast<float>(viewportStatus_.orbitDistanceMeters * factor), 0.2f, 10000000.0f);
             viewportStatus_.zoom = 100.0 / static_cast<double>(viewportStatus_.orbitDistanceMeters);
             viewportStatus_.metersPerPixel = viewportStatus_.orbitDistanceMeters / 900.0;
         }
     }
 
-    if (viewportInput_.hovered && ImGui::IsKeyPressed(ImGuiKey_R) && !io.WantCaptureKeyboard) {
+    if (!navigationBlocked && !navigationHandledByTool && viewportInput_.hovered && ImGui::IsKeyPressed(ImGuiKey_R) && !io.WantCaptureKeyboard) {
         resetViewportCamera();
     }
 

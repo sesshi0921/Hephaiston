@@ -6,6 +6,7 @@
 #include "SelectionManager.h"
 #include "SceneRegistry.h"
 #include "ViewportRenderSettings.h"
+#include "ViewportNavigationSettings.h"
 #include "ViewportSceneLayer.h"
 #include "EditorPanel.h"
 #include "EditorWindow.h"

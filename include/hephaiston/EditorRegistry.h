@@ -45,6 +45,8 @@ public:
 
     [[nodiscard]] ViewportRenderSettings& viewportRenderSettings() { return viewportRenderSettings_; }
     [[nodiscard]] const ViewportRenderSettings& viewportRenderSettings() const { return viewportRenderSettings_; }
+    [[nodiscard]] ViewportNavigationSettings& viewportNavigationSettings() { return viewportNavigationSettings_; }
+    [[nodiscard]] const ViewportNavigationSettings& viewportNavigationSettings() const { return viewportNavigationSettings_; }
 
     [[nodiscard]] std::vector<RegisteredMainMenuPanel>& mainMenuPanels() { return mainMenuPanels_; }
     [[nodiscard]] std::vector<RegisteredHierarchyPanel>& hierarchyPanels() { return hierarchyPanels_; }
@@ -85,6 +87,7 @@ public:
 private:
     EditorMenuVisibility menuVisibility_;
     ViewportRenderSettings viewportRenderSettings_;
+    ViewportNavigationSettings viewportNavigationSettings_;
     std::vector<RegisteredMainMenuPanel> mainMenuPanels_;
     std::vector<RegisteredHierarchyPanel> hierarchyPanels_;
     std::vector<RegisteredFloatingWindow> floatingWindows_;

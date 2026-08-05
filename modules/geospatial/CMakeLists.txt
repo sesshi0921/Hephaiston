@@ -1,0 +1,3 @@
+add_library(hephaiston_geospatial STATIC src/JapanPlaneRectangular.cpp)
+target_compile_features(hephaiston_geospatial PUBLIC cxx_std_20)
+target_include_directories(hephaiston_geospatial PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

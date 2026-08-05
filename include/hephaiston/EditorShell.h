@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hephaiston/EditorRegistry.h"
+#include "hephaiston/EditorLogger.h"
 #include "hephaiston/EditorTypes.h"
 #include "hephaiston/PluginManager.h"
 #include "hephaiston/SceneRegistry.h"
@@ -8,6 +9,8 @@
 #include "hephaiston/ViewportRenderer.h"
 
 #include <string>
+#include <memory>
+#include <filesystem>
 #include <vector>
 
 namespace hephaiston {
@@ -24,8 +27,13 @@ public:
 
     void initializeCoreRegistry();
     void draw(ViewportRenderer& viewportRenderer, bool& shouldClose);
+    // Native platform gesture bridges submit magnification deltas here. They
+    // are consumed once by the next viewport input update.
+    void addTrackpadPinchDelta(float magnification);
+    void addTrackpadScrollDelta(float deltaY);
 
     [[nodiscard]] EditorRegistry& registry() { return registry_; }
+    [[nodiscard]] IEditorLogger& logger() { return *logger_; }
     [[nodiscard]] const EditorLayoutState& layoutState() const { return layoutState_; }
     [[nodiscard]] int targetMaxFps() const { return maxFps_; }
     [[nodiscard]] std::string windowTitle() const;
@@ -50,11 +58,17 @@ private:
     void drawHierarchyItem(const EditorHierarchyItem& item);
     void drawSceneObject(const SceneObject& object);
     void drawPluginMenuItems(std::string_view menuName);
+    void registerCoreExtensions();
+    void refreshPluginGallery();
+    void drawPluginGallery(std::string& requestedPluginPath);
+    void unloadAllPlugins();
+    void restoreCoreViewportDefaults();
     void updateViewportInput();
     void resetViewportCamera();
     void handleSplitter(float x, float y, float height, bool leftSide);
     [[nodiscard]] ViewportVisibleRect calculateVisibleRect(ImVec2 displaySize) const;
 
+    std::unique_ptr<IEditorLogger> logger_;
     PluginManager pluginManager_;
     EditorRegistry registry_;
     SelectionManager selectionManager_;
@@ -62,6 +76,8 @@ private:
     EditorLayoutState layoutState_;
     ViewportStatus viewportStatus_;
     ViewportInputState viewportInput_;
+    float pendingTrackpadPinchDelta_ = 0.0f;
+    float pendingTrackpadScrollDelta_ = 0.0f;
     ViewportVisibleRect visibleRect_;
     ViewMode viewMode_ = ViewMode::Mode3D;
     bool viewportDragActive_ = false;
@@ -70,6 +86,8 @@ private:
     int activePanelIndex_ = 0;
     int maxFps_ = 60;
     std::string selectedHierarchyItem_;
+    std::vector<std::filesystem::path> pluginGalleryCandidates_;
+    bool openPluginGalleryOnStartup_ = true;
     HierarchyNode hierarchyRoot_;
 };
 

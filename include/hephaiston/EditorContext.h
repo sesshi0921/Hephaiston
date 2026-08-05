@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hephaiston/EditorRegistry.h"
+#include "hephaiston/EditorLogger.h"
 #include "hephaiston/EditorTypes.h"
 #include "hephaiston/SceneRegistry.h"
 #include "hephaiston/SelectionManager.h"
@@ -19,7 +20,8 @@ public:
                   ViewportVisibleRect& visibleRect,
                   ViewMode& viewMode,
                   SelectionManager& selection,
-                  SceneRegistry& scene)
+                  SceneRegistry& scene,
+                  IEditorLogger& logger)
         : registry_(registry),
           layoutState_(layoutState),
           viewportStatus_(viewportStatus),
@@ -27,7 +29,8 @@ public:
           visibleRect_(visibleRect),
           viewMode_(viewMode),
           selection_(selection),
-          scene_(scene) {}
+          scene_(scene),
+          logger_(logger) {}
 
     [[nodiscard]] EditorRegistry& registry() { return registry_; }
     [[nodiscard]] EditorLayoutState& layoutState() { return layoutState_; }
@@ -37,6 +40,7 @@ public:
     [[nodiscard]] ViewMode& viewMode() { return viewMode_; }
     [[nodiscard]] SelectionManager& selection() { return selection_; }
     [[nodiscard]] SceneRegistry& scene() { return scene_; }
+    [[nodiscard]] IEditorLogger& logger() { return logger_; }
 
     [[nodiscard]] const EditorRegistry& registry() const { return registry_; }
     [[nodiscard]] const EditorLayoutState& layoutState() const { return layoutState_; }
@@ -46,6 +50,7 @@ public:
     [[nodiscard]] ViewMode viewMode() const { return viewMode_; }
     [[nodiscard]] const SelectionManager& selection() const { return selection_; }
     [[nodiscard]] const SceneRegistry& scene() const { return scene_; }
+    [[nodiscard]] IEditorLogger& logger() const { return logger_; }
 
 private:
     EditorRegistry& registry_;
@@ -56,6 +61,7 @@ private:
     ViewMode& viewMode_;
     SelectionManager& selection_;
     SceneRegistry& scene_;
+    IEditorLogger& logger_;
 };
 
 } // namespace hephaiston
