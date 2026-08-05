@@ -20,6 +20,7 @@ logs/
 
 # Build-time dependencies and runtime imagery are intentionally outside Git.
 /external/imgui/
+/external/stb/
 /assets/nasa_bluemarble_2048.png
 
 # macOS

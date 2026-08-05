@@ -37,8 +37,8 @@ Hephaiston（ヘパイストン）は、建築設計ワークフローをプラ�
 - OpenGL
 - spdlog（`external/cpp-logger` の依存）
 
-Dear ImGui Docking Branch は、固定リビジョンを CMake `FetchContent` で
-`build/_deps/hephaiston_imgui-src/` へ取得します。Earth の低ズーム背景テクスチャも、
+Dear ImGui Docking Branch と stb_image は、固定リビジョンを CMake `FetchContent` で
+`build/_deps/` へ取得します。Earth の低ズーム背景テクスチャも、
 初回 configure 時に NASA の公式 Blue Marble を
 `build/assets/nasa_bluemarble_2048.png` へ取得します。どちらもリポジトリ管理外です。
 
@@ -203,7 +203,7 @@ public:
 
 - Dear ImGui Docking Branch: CMake `FetchContent` が `build/_deps/hephaiston_imgui-src/` に固定リビジョンを取得します。オフライン環境では `-DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_IMGUI=/absolute/path/to/imgui` を指定できます。
 - NASA Blue Marble: CMake が `build/assets/nasa_bluemarble_2048.png` に取得します。クレジットは NASA/GSFC SVS および NASA Earth Observatory / Reto Stockli です。オフラインで再構成する場合は、既存ファイルを残すか `-DHEPHAISTON_EARTH_TEXTURE_PATH=/absolute/path/to/bluemarble.png` を指定してください。画像が利用できない場合も、Earthビューは緯線経線グリッドへフォールバックします。
-- `external/stb/stb_image.h`: stb single-file image loader（public domain または MIT License）。PNGのデコードだけに使用します。
+- stb_image v2.30: CMake `FetchContent` が `build/_deps/hephaiston_stb-src/` に固定リビジョンを取得します。オフライン環境では `-DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_STB=/absolute/path/to/stb` を指定できます。ライセンスは public domain または MIT License です。PNGのデコードだけに使用します。
 - libcurl: XYZタイルのHTTP取得に使用します（curl license）。
 
 ## テスト

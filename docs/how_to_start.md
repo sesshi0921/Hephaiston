@@ -18,8 +18,8 @@ brew install glfw spdlog
 
 ## 2. 外部依存・地表テクスチャの取得
 
-Dear ImGui Docking Branch は、CMake configure 時に固定リビジョンを
-`build/_deps/hephaiston_imgui-src/` へ取得します。Earthビューの低ズーム背景に使う
+Dear ImGui Docking Branch と stb_image は、CMake configure 時に固定リビジョンを
+`build/_deps/` へ取得します。Earthビューの低ズーム背景に使う
 NASA Blue Marbleも、`build/assets/nasa_bluemarble_2048.png` へ取得します。
 いずれもソースリポジトリには保存されません。
 
@@ -29,6 +29,7 @@ NASA Blue Marbleも、`build/assets/nasa_bluemarble_2048.png` へ取得します
 ```bash
 cmake -S . -B build \
   -DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_IMGUI=/absolute/path/to/imgui \
+  -DFETCHCONTENT_SOURCE_DIR_HEPHAISTON_STB=/absolute/path/to/stb \
   -DHEPHAISTON_EARTH_TEXTURE_PATH=/absolute/path/to/bluemarble-2048.png
 ```
 

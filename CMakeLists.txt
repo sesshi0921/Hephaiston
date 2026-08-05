@@ -40,6 +40,23 @@ if(NOT EXISTS ${IMGUI_DIR}/imgui.h)
     message(FATAL_ERROR "Fetched Dear ImGui source is incomplete: ${IMGUI_DIR}")
 endif()
 
+# stb_image is a single-header dependency, but it is still kept out of the
+# source repository.  Pin the exact revision that supplied the previous local
+# stb_image v2.30 header.  An offline checkout may be supplied through
+# FETCHCONTENT_SOURCE_DIR_HEPHAISTON_STB.
+set(HEPHAISTON_STB_GIT_TAG "013ac3beddff3dbffafd5177e7972067cd2b5083"
+    CACHE STRING "Pinned stb revision")
+FetchContent_Declare(hephaiston_stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG ${HEPHAISTON_STB_GIT_TAG}
+    GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable(hephaiston_stb)
+set(STB_DIR ${hephaiston_stb_SOURCE_DIR})
+if(NOT EXISTS ${STB_DIR}/stb_image.h)
+    message(FATAL_ERROR "Fetched stb source is incomplete: ${STB_DIR}")
+endif()
+
 hephaiston_prepare_runtime_assets()
 
 add_library(imgui STATIC
@@ -114,7 +131,7 @@ add_executable(hephaiston
     src/ViewportRenderer.cpp
 )
 target_include_directories(hephaiston PRIVATE include)
-target_include_directories(hephaiston PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/external/stb)
+target_include_directories(hephaiston PRIVATE ${STB_DIR})
 target_link_libraries(hephaiston PRIVATE hephaiston_plugin_api imgui glfw OpenGL::GL cpp_logger::cpp_logger ${CMAKE_DL_LIBS})
 target_compile_definitions(hephaiston PRIVATE HEPHAISTON_LOG_DIRECTORY="${CMAKE_BINARY_DIR}/logs")
 
